@@ -74,7 +74,9 @@ async function readImageAsBase64(imagePath: string): Promise<string> {
 // ============ API 客户端 ============
 
 class ComfyUIAPIClient {
-  constructor(private baseUrl: string) {
+  public baseUrl: string;
+
+  constructor(baseUrl: string) {
     this.baseUrl = normalizeUrl(baseUrl);
   }
 
@@ -127,13 +129,20 @@ class ComfyUIAPIClient {
 
 export class ComfyUIImageProvider implements AIProvider {
   private client: ComfyUIAPIClient;
+  private editClient: ComfyUIAPIClient;
 
   constructor(
-    private apiUrl = process.env.COMFYUI_API_URL || "",
     private uploadDir = process.env.UPLOAD_DIR || "./uploads",
-    private defaultWorkflow = "image_z_image_turbo.json"
+    private defaultWorkflow = "image_z_image_turbo.json",
+    private imageEditWorkflow = "image_qwen_image_edit_2509.json"
   ) {
-    this.client = new ComfyUIAPIClient(this.apiUrl);
+    // 文生图 API
+    const imageApiUrl = process.env.COMFYUI_IMAGE_API_URL || "";
+    this.client = new ComfyUIAPIClient(imageApiUrl);
+    
+    // 图生图 API（独立服务器）
+    const editApiUrl = process.env.COMFYUI_IMAGE_EDIT_API_URL || imageApiUrl;
+    this.editClient = new ComfyUIAPIClient(editApiUrl);
   }
 
   async generateText(_prompt: string): Promise<string> {
@@ -247,14 +256,61 @@ export class ComfyUIImageProvider implements AIProvider {
   }
 
   /**
+   * 异步提交图生图编辑任务（不等待完成）
+   * 使用 image_qwen_image_edit_2509.json 工作流
+   */
+  async submitImageEdit(
+    prompt: string,
+    inputImage: string,
+    options?: ImageOptions
+  ): Promise<ImageSubmitResult> {
+    const workflow = loadWorkflowTemplate(this.imageEditWorkflow);
+    if (!workflow) {
+      throw new Error(`Failed to load workflow: ${this.imageEditWorkflow}`);
+    }
+
+    // 使用图生图专用的 API Client
+    const editClient = this.editClient;
+
+    // 上传输入图片到 ComfyUI（图生图服务器）
+    const imageData = await readImageAsBase64(inputImage);
+    const uploadedImage = await editClient.uploadImage(
+      Buffer.from(imageData, "base64"),
+      path.basename(inputImage)
+    );
+
+    // 修改工作流中的 LoadImage 节点
+    const workflowCopy = JSON.parse(JSON.stringify(workflow)) as Record<string, { class_type?: string; inputs?: Record<string, unknown> }>;
+    
+    // 查找 LoadImage 节点并更新图片引用
+    for (const [nodeId, nodeData] of Object.entries(workflowCopy)) {
+      if (nodeData.class_type === "LoadImage" && nodeData.inputs) {
+        nodeData.inputs.image = uploadedImage.name;
+        console.log(`[ComfyUI] Updated LoadImage node ${nodeId} with: ${uploadedImage.name}`);
+      }
+      // 查找 PrimitiveStringMultiline 节点并更新 prompt
+      if (nodeData.class_type === "PrimitiveStringMultiline" && nodeData.inputs) {
+        nodeData.inputs.value = prompt;
+        console.log(`[ComfyUI] Updated prompt in node ${nodeId}`);
+      }
+    }
+
+    const { prompt_id } = await editClient.queuePrompt(workflowCopy);
+    return { promptId: prompt_id };
+  }
+
+  /**
    * 异步检查图片任务状态
    */
   async checkImageStatus(
     promptId: string,
-    options?: ImageOptions
+    options?: ImageOptions & { useImageEditApi?: boolean }
   ): Promise<ImageStatusResult> {
     try {
-      const queue = await this.client.getQueueStatus();
+      // 图生图任务使用独立的 API
+      const client = options?.useImageEditApi ? this.editClient : this.client;
+      
+      const queue = await client.getQueueStatus();
       const isRunning = queue.queue_running.some((p: unknown) =>
         Array.isArray(p) && (p[1] as Record<string, unknown>)?.prompt_id === promptId
       );
@@ -340,7 +396,9 @@ export class ComfyUIImageProvider implements AIProvider {
   private async waitWithWebSocket(promptId: string, options?: ImageOptions & ProgressCallback): Promise<TaskResult> {
     return new Promise((resolve, reject) => {
       const clientId = generateClientId();
-      const wsHost = this.apiUrl.replace(/^https?:\/\//, '');
+      // 获取当前使用的 client 的 baseUrl
+      const baseUrl = options?.useImageEditApi ? this.editClient.baseUrl : this.client.baseUrl;
+      const wsHost = baseUrl.replace(/^https?:\/\//, '');
       const ws = new WebSocket(`ws://${wsHost}/ws?clientId=${clientId}`);
       let isResolved = false;
 
@@ -392,12 +450,14 @@ export class ComfyUIImageProvider implements AIProvider {
     });
   }
 
-  private async pollCompletion(promptId: string, options?: ProgressCallback, maxRetries = 120): Promise<TaskResult> {
+  private async pollCompletion(promptId: string, options?: ImageOptions & ProgressCallback, maxRetries = 120): Promise<TaskResult> {
     console.log(`[ComfyUI] Starting poll for promptId: ${promptId}, maxRetries: ${maxRetries}`);
     for (let i = 0; i < maxRetries; i++) {
       await new Promise(r => setTimeout(r, 15000));
 
-      const queue = await this.client.getQueueStatus();
+      // 根据 useImageEditApi 选择对应的 client
+      const client = options?.useImageEditApi ? this.editClient : this.client;
+      const queue = await client.getQueueStatus();
       const isRunning = queue.queue_running.some((p: unknown) =>
         Array.isArray(p) && (p[1] as Record<string, unknown>)?.prompt_id === promptId
       );
@@ -413,9 +473,12 @@ export class ComfyUIImageProvider implements AIProvider {
     return { taskId: promptId, status: "failed", error: "Timeout" };
   }
 
-  private async getImageResult(promptId: string, options?: ImageOptions): Promise<TaskResult | null> {
+  private async getImageResult(promptId: string, options?: ImageOptions & { useImageEditApi?: boolean }): Promise<TaskResult | null> {
     try {
-      const history = await this.client.getHistory(promptId);
+      // 图生图任务使用独立的 API
+      const client = options?.useImageEditApi ? this.editClient : this.client;
+      
+      const history = await client.getHistory(promptId);
       console.log(`[ComfyUI] History for ${promptId}:`, JSON.stringify(history).slice(0, 500));
       const outputs = (history[promptId] as Record<string, unknown>)?.outputs as Record<string, unknown> | undefined;
 
@@ -428,7 +491,7 @@ export class ComfyUIImageProvider implements AIProvider {
         const output = outputs![nodeId] as Record<string, unknown>;
         if (output?.images) {
           const images = output.images as Array<{ filename: string; subfolder?: string }>;
-          const buffer = await this.client.downloadImage(images[0].filename, images[0].subfolder || "");
+          const buffer = await client.downloadImage(images[0].filename, images[0].subfolder || "");
 
           const filename = `${ulid()}.png`;
           const dir = options?.projectId ? getProjectFramesDir(options.projectId) : path.join(this.uploadDir, "frames");
@@ -452,7 +515,7 @@ export class ComfyUIVideoProvider implements VideoProvider {
   private client: ComfyUIAPIClient;
 
   constructor(
-    private apiUrl = process.env.COMFYUI_VIDEO_API_URL || process.env.COMFYUI_API_URL || "",
+    private apiUrl = process.env.COMFYUI_VIDEO_API_URL || "",
     private uploadDir = process.env.UPLOAD_DIR || "./uploads",
     private defaultWorkflow = "video_wan2_2_14B_i2v.json"
   ) {
@@ -684,11 +747,16 @@ export function getComfyUIVideoProvider(): ComfyUIVideoProvider {
  */
 export async function recoverImageByPromptId(
   promptId: string,
-  apiUrl?: string,
-  uploadDir?: string
+  options?: {
+    apiUrl?: string;
+    uploadDir?: string;
+    useImageEditApi?: boolean;
+  }
 ): Promise<string | null> {
-  const url = apiUrl || process.env.COMFYUI_API_URL || "";
-  const dir = uploadDir || process.env.UPLOAD_DIR || "./uploads";
+  const imageApiUrl = process.env.COMFYUI_IMAGE_API_URL || "";
+  const editApiUrl = process.env.COMFYUI_IMAGE_EDIT_API_URL || imageApiUrl;
+  const url = options?.apiUrl || (options?.useImageEditApi ? editApiUrl : imageApiUrl);
+  const dir = options?.uploadDir || process.env.UPLOAD_DIR || "./uploads";
 
   const client = new ComfyUIAPIClient(url);
   try {

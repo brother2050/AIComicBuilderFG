@@ -1,5 +1,6 @@
 /**
  * 帧图生成流水线（异步模式）
+ * 参考 twwch/AIComicBuilder 的首尾帧处理逻辑
  * 支持 ComfyUI/OpenAI 作为图像生成 Provider
  */
 import { getImageProvider, getImageProviderType, ComfyUIImageProvider } from "@/lib/ai";
@@ -36,8 +37,19 @@ export async function generateFrames(
   const imageProvider = getImageProvider();
   const useComfyUI = getImageProviderType() === "comfyui";
   const comfyProvider = imageProvider as ComfyUIImageProvider;
-  const charRefs = (await db.query.characters.findMany({ where: eq(characters.projectId, projectId) }))
-    .map(c => ({ name: c.name, visualHint: c.visualHint || "", referenceImage: c.referenceImage || undefined }));
+
+  // 获取项目角色列表
+  const projectCharacters = await db.query.characters.findMany({
+    where: eq(characters.projectId, projectId),
+  });
+
+  // 构建角色描述（参考 twwch/AIComicBuilder）
+  const characterDescParts: string[] = [];
+  for (const c of projectCharacters) {
+    const desc = `${c.name}: ${c.visualDescription || c.description || ""}`;
+    characterDescParts.push(desc);
+  }
+  const characterDescriptions = characterDescParts.join("\n");
 
   // 从工作流获取默认参数
   const workflowDefaults = fullWorkflow ? getWorkflowDefaults(fullWorkflow) : {
@@ -45,10 +57,8 @@ export async function generateFrames(
     sampler_name: "res_multistep", scheduler: "simple", model: "", vae: "", clip: ""
   };
   const aspectSize = `${workflowDefaults.width}x${workflowDefaults.height}`;
-  let previousLastFrame: string | undefined;
-  let cascadeFirstFrame = false;
 
-  // 构建完整默认参数
+  // 构建默认图片参数
   const defaultImageParams = {
     size: aspectSize as "1024x1024",
     steps: workflowDefaults.steps,
@@ -61,121 +71,114 @@ export async function generateFrames(
     projectId
   };
 
-  // 异步模式：先提交所有首帧任务
-  const pendingFirstFrames: Array<{ shotId: string; promptId: string }> = [];
+  const checkCancelled = taskId ? async () => isTaskCancelled(taskId) : undefined;
 
-  for (const shot of projectShots) {
-    let needFirstFrame = shot.startFrameDesc && (force || !shot.firstFrame);
-    let needLastFrame = shot.endFrameDesc && (force || !shot.lastFrame);
-    if (cascadeFirstFrame) needFirstFrame = !!shot.startFrameDesc;
+  // 逐个镜头处理（参考 twwch/AIComicBuilder 的串行处理方式）
+  for (let i = 0; i < projectShots.length; i++) {
+    const shot = projectShots[i];
+
+    // 检查是否被取消
+    if (checkCancelled) {
+      const cancelled = await checkCancelled();
+      if (cancelled) {
+        console.log(`[FrameGenerate] Task cancelled, stopping at shot ${shot.sequence}`);
+        return;
+      }
+    }
+
+    const needFirstFrame = shot.startFrameDesc && (force || !shot.firstFrame);
+    const needLastFrame = shot.endFrameDesc && (force || !shot.lastFrame);
 
     if (!needFirstFrame && !needLastFrame) {
-      if (shot.lastFrame) previousLastFrame = shot.lastFrame;
+      console.log(`[FrameGenerate] Shot ${shot.sequence}: skipping (already has frames)`);
       continue;
     }
 
     await db.update(shots).set({ status: "generating" }).where(eq(shots.id, shot.id));
 
     try {
+      // 获取上一个镜头的尾帧（用于连续性提示）
+      let previousLastFrame: string | undefined;
+      if (i > 0) {
+        const prevShot = projectShots[i - 1];
+        if (prevShot.lastFrame) {
+          previousLastFrame = prevShot.lastFrame;
+        }
+      }
+
+      let firstFramePath: string | null = null;
+
       // 生成首帧
       if (needFirstFrame) {
-        let framePath: string | null = null;
+        console.log(`[FrameGenerate] Shot ${shot.sequence}: generating first frame`);
 
-        if (previousLastFrame) {
-          // 使用上一帧作为首帧
-          framePath = previousLastFrame;
+        const firstFramePrompt = buildFirstFramePrompt({
+          sceneDescription: shot.sceneDescription || "",
+          startFrameDesc: shot.startFrameDesc!,
+          characterDescriptions,
+          style: project.style || "anime",
+          previousLastFrame,
+        });
+
+        if (useComfyUI && comfyProvider.submitImage) {
+          const result = await comfyProvider.submitImage(firstFramePrompt, defaultImageParams);
+          await db.update(shots).set({ firstFramePromptId: result.promptId }).where(eq(shots.id, shot.id));
+          firstFramePath = await comfyProvider.pollImageUntilComplete(result.promptId, { projectId, checkCancelled });
         } else {
-          const prompt = buildFirstFramePrompt({
-            shotDescription: shot.startFrameDesc!,
-            characterReferences: charRefs,
-            style: project.style || "anime"
-          });
-
-          if (useComfyUI && comfyProvider.submitImage) {
-            const result = await comfyProvider.submitImage(prompt, defaultImageParams);
-            await db.update(shots).set({ firstFramePromptId: result.promptId }).where(eq(shots.id, shot.id));
-            pendingFirstFrames.push({ shotId: shot.id, promptId: result.promptId });
-          } else {
-            framePath = await imageProvider.generateImage(prompt, defaultImageParams);
-            await db.update(shots).set({ firstFrame: framePath, status: needLastFrame ? "partial" : "completed" }).where(eq(shots.id, shot.id));
-          }
+          firstFramePath = await imageProvider.generateImage(firstFramePrompt, defaultImageParams);
         }
 
-        if (framePath) {
-          const newStatus = needLastFrame ? "partial" : "completed";
-          await db.update(shots).set({ firstFrame: framePath, firstFramePromptId: null, status: newStatus }).where(eq(shots.id, shot.id));
-        }
+        await db.update(shots)
+          .set({ firstFrame: firstFramePath, firstFramePromptId: null })
+          .where(eq(shots.id, shot.id));
+        console.log(`[FrameGenerate] Shot ${shot.sequence}: first frame saved: ${firstFramePath}`);
+      } else if (shot.firstFrame) {
+        // 使用已有的首帧
+        firstFramePath = shot.firstFrame;
       }
 
-      // 尾帧暂不提交，等待首帧完成
-      if (!needLastFrame && shot.lastFrame) {
-        previousLastFrame = shot.lastFrame;
+      // 生成尾帧（使用图生图工作流，基于首帧编辑）
+      if (needLastFrame && firstFramePath) {
+        console.log(`[FrameGenerate] Shot ${shot.sequence}: generating last frame (image edit mode)`);
+
+        const lastFramePrompt = buildLastFramePrompt({
+          sceneDescription: shot.sceneDescription || "",
+          endFrameDesc: shot.endFrameDesc!,
+          characterDescriptions,
+          style: project.style || "anime",
+          firstFramePath,
+        });
+
+        let lastFramePath: string | null = null;
+
+        if (useComfyUI && comfyProvider.submitImageEdit) {
+          // 使用图生图工作流（image_qwen_image_edit_2509.json）
+          const result = await comfyProvider.submitImageEdit(lastFramePrompt, firstFramePath, { projectId });
+          await db.update(shots).set({ lastFramePromptId: result.promptId }).where(eq(shots.id, shot.id));
+          lastFramePath = await comfyProvider.pollImageUntilComplete(result.promptId, { projectId, checkCancelled, useImageEditApi: true });
+        } else if (useComfyUI && comfyProvider.submitImage) {
+          // 回退到普通图片生成
+          const result = await comfyProvider.submitImage(lastFramePrompt, defaultImageParams);
+          await db.update(shots).set({ lastFramePromptId: result.promptId }).where(eq(shots.id, shot.id));
+          lastFramePath = await comfyProvider.pollImageUntilComplete(result.promptId, { projectId, checkCancelled });
+        } else {
+          lastFramePath = await imageProvider.generateImage(lastFramePrompt, defaultImageParams);
+        }
+
+        await db.update(shots)
+          .set({ lastFrame: lastFramePath, lastFramePromptId: null, status: "completed" })
+          .where(eq(shots.id, shot.id));
+        console.log(`[FrameGenerate] Shot ${shot.sequence}: last frame saved: ${lastFramePath}`);
+      } else if (shot.lastFrame) {
+        // 已有尾帧，只更新状态
+        await db.update(shots).set({ status: "completed" }).where(eq(shots.id, shot.id));
       }
     } catch (error) {
-      console.error(`[Pipeline] Shot ${shot.sequence} first frame failed:`, error);
+      console.error(`[FrameGenerate] Shot ${shot.sequence} failed:`, error);
       await db.update(shots).set({ status: "failed" }).where(eq(shots.id, shot.id));
       throw error;
     }
   }
 
-  // 等待首帧完成并处理尾帧
-  const checkCancelled = taskId ? async () => isTaskCancelled(taskId) : undefined;
-  if (useComfyUI && comfyProvider.pollImageUntilComplete) {
-    for (const task of pendingFirstFrames) {
-      try {
-        const imagePath = await comfyProvider.pollImageUntilComplete(task.promptId, { projectId, checkCancelled });
-        await db.update(shots).set({ firstFrame: imagePath, firstFramePromptId: null }).where(eq(shots.id, task.shotId));
-        console.log(`[Pipeline] First frame saved: ${imagePath}`);
-      } catch (e) {
-        console.error(`[Pipeline] First frame task failed: ${task.promptId}`, e);
-        await db.update(shots).set({ firstFramePromptId: null, status: "failed" }).where(eq(shots.id, task.shotId));
-        throw e;
-      }
-    }
-  }
-
-  // 现在处理尾帧
-  const pendingLastFrames: Array<{ shotId: string; promptId: string }> = [];
-
-  for (const shot of projectShots) {
-    let needLastFrame = shot.endFrameDesc && (force || !shot.lastFrame);
-    if (!needLastFrame) continue;
-
-    try {
-      const prompt = buildLastFramePrompt({
-        shotDescription: shot.endFrameDesc!,
-        characterReferences: charRefs,
-        style: project.style || "anime"
-      });
-
-      if (useComfyUI && comfyProvider.submitImage) {
-        const result = await comfyProvider.submitImage(prompt, defaultImageParams);
-        await db.update(shots).set({ lastFramePromptId: result.promptId }).where(eq(shots.id, shot.id));
-        pendingLastFrames.push({ shotId: shot.id, promptId: result.promptId });
-      } else {
-        const imagePath = await imageProvider.generateImage(prompt, defaultImageParams);
-        await db.update(shots).set({ lastFrame: imagePath, status: "completed" }).where(eq(shots.id, shot.id));
-        console.log(`[Pipeline] Last frame saved: ${imagePath}`);
-      }
-    } catch (error) {
-      console.error(`[Pipeline] Shot ${shot.sequence} last frame failed:`, error);
-      await db.update(shots).set({ status: "failed" }).where(eq(shots.id, shot.id));
-      throw error;
-    }
-  }
-
-  // 等待尾帧完成
-  if (useComfyUI && comfyProvider.pollImageUntilComplete) {
-    for (const task of pendingLastFrames) {
-      try {
-        const imagePath = await comfyProvider.pollImageUntilComplete(task.promptId, { projectId, checkCancelled });
-        await db.update(shots).set({ lastFrame: imagePath, lastFramePromptId: null, status: "completed" }).where(eq(shots.id, task.shotId));
-        console.log(`[Pipeline] Last frame saved: ${imagePath}`);
-      } catch (e) {
-        console.error(`[Pipeline] Last frame task failed: ${task.promptId}`, e);
-        await db.update(shots).set({ lastFramePromptId: null, status: "failed" }).where(eq(shots.id, task.shotId));
-        throw e;
-      }
-    }
-  }
+  console.log(`[FrameGenerate] All frames generated for project: ${projectId}`);
 }
