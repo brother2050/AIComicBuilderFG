@@ -17,6 +17,7 @@ export async function POST(request: Request) {
     });
 
     if (pendingTasks.length === 0) {
+      console.log(`[Task Processor] No pending tasks found`);
       return NextResponse.json({ 
         processed: 0,
         message: "No pending tasks" 
@@ -27,7 +28,25 @@ export async function POST(request: Request) {
     const payload = (task.payload || {}) as Record<string, unknown>;
     const action = payload.action as string;
 
+    console.log(`[Task Processor] Found pending task:`, {
+      taskId: task.id,
+      type: task.type,
+      projectId: task.projectId,
+      action,
+      payload: {
+        shotId: payload.shotId || null,
+        idea: payload.idea ? (payload.idea as string).slice(0, 100) + "..." : null,
+        style: payload.style || null,
+        force: payload.force || false,
+      },
+    });
+
     if (!action || !task.projectId) {
+      console.warn(`[Task Processor] Task missing required data:`, {
+        taskId: task.id,
+        action: action || 'MISSING',
+        projectId: task.projectId || 'MISSING',
+      });
       // 更新任务状态为失败
       await db.update(tasks)
         .set({ 
@@ -43,7 +62,8 @@ export async function POST(request: Request) {
     }
 
     // 执行任务
-    console.log(`[Task Processor] Processing task: ${task.id}, action: ${action}`);
+    console.log(`[Task Processor] Starting task execution: taskId=${task.id}, action=${action}`);
+    const startTime = Date.now();
     
     try {
       await executeTask(
@@ -56,8 +76,14 @@ export async function POST(request: Request) {
           style: payload.style as string | undefined,
         }
       );
+      console.log(`[Task Processor] Task completed successfully: taskId=${task.id}, duration=${Date.now() - startTime}ms`);
     } catch (error) {
-      console.error(`[Task Processor] Task failed: ${task.id}`, error);
+      console.error(`[Task Processor] Task failed:`, {
+        taskId: task.id,
+        action,
+        error: error instanceof Error ? error.message : "Unknown error",
+        stack: error instanceof Error ? error.stack : undefined,
+      });
     }
 
     return NextResponse.json({ 
@@ -66,7 +92,10 @@ export async function POST(request: Request) {
       message: `Task ${action} executed` 
     });
   } catch (error) {
-    console.error("[API] Task processing error:", error);
+    console.error("[API] Task processing error:", {
+      error: error instanceof Error ? error.message : "Unknown error",
+      stack: error instanceof Error ? error.stack : undefined,
+    });
     return NextResponse.json(
       { error: "Failed to process tasks" },
       { status: 500 }

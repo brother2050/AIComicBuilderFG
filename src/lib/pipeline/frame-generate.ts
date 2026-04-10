@@ -3,16 +3,18 @@
  * 为每个分镜生成首帧和尾帧
  * 支持 OpenAI (DALL-E) 或 ComfyUI 作为图像生成 Provider
  * 支持强制重新生成（覆盖已有图片）
+ * 支持项目级自定义工作流
  * 
  * 分镜连贯性规则：
  * - 第 N 个分镜的首帧 = 第 N-1 个分镜的尾帧（复用，不重新生成）
  * - 只有第 1 个分镜需要独立生成首帧
  * - force 模式下重新生成尾帧时，后续所有分镜的首帧也会更新
  */
-import { getImageProvider, getImageProviderType } from "@/lib/ai";
+import { getImageProvider, getImageProviderType, ComfyUIImageProvider } from "@/lib/ai";
 import { db, shots, characters, projects } from "@/lib/db";
 import { eq } from "drizzle-orm";
 import { buildFirstFramePrompt, buildLastFramePrompt } from "@/lib/prompts/frame-generate";
+import { loadWorkflowTemplate } from "@/lib/ai/providers/workflow-template";
 
 export interface GenerateFramesOptions {
   /** 强制重新生成，即使已有图片 */
@@ -33,6 +35,79 @@ export async function generateFrames(
 
   if (!project) {
     throw new Error("Project not found");
+  }
+
+  // 解析项目级图片工作流（如果存在）
+  // 可能是完整工作流对象，也可能是配置引用 { _workflowFile, _width, _height, _steps }
+  let fullWorkflow: Record<string, unknown> | undefined;
+  if (project.imageWorkflow) {
+    try {
+      const imageWorkflowConfig = JSON.parse(project.imageWorkflow) as Record<string, unknown>;
+      console.log(`[Pipeline] Using custom image workflow for project: ${projectId}`);
+      
+      // 如果是配置引用（包含 _workflowFile），需要加载实际模板
+      if (imageWorkflowConfig._workflowFile) {
+        const templateFile = String(imageWorkflowConfig._workflowFile);
+        const template = loadWorkflowTemplate(templateFile);
+        if (template) {
+          // 检测是否是子图格式（包含 definitions.subgraphs）
+          // 子图格式不支持 API，需要回退到标准模板
+          const templateDefinitions = template.definitions as Record<string, unknown> | undefined;
+          if (templateDefinitions?.subgraphs) {
+            // 子图格式不支持 API，尝试加载对应的 _api.json 版本
+            const apiVersion = templateFile.replace('.json', '_api.json');
+            console.warn(`[Pipeline] Template ${templateFile} uses subgraph format, trying API version: ${apiVersion}`);
+            const apiTemplate = loadWorkflowTemplate(apiVersion);
+            if (apiTemplate) {
+              fullWorkflow = {
+                ...apiTemplate,
+                _config: {
+                  width: Number(imageWorkflowConfig._width) || 1024,
+                  height: Number(imageWorkflowConfig._height) || 1024,
+                  steps: Number(imageWorkflowConfig._steps) || 8,
+                  model: imageWorkflowConfig._model as string || undefined,
+                }
+              };
+              console.log(`[Pipeline] Using API workflow template: ${apiVersion}`);
+            } else {
+              console.warn(`[Pipeline] No API version found, falling back to standard_sd15.json`);
+              const fallbackTemplate = loadWorkflowTemplate('standard_sd15.json');
+              if (fallbackTemplate) {
+                fullWorkflow = {
+                  ...fallbackTemplate,
+                  _config: {
+                    width: Number(imageWorkflowConfig._width) || 1024,
+                    height: Number(imageWorkflowConfig._height) || 1024,
+                    steps: Number(imageWorkflowConfig._steps) || 8,
+                    model: imageWorkflowConfig._model as string || undefined,
+                  }
+                };
+                console.log(`[Pipeline] Using fallback workflow template: standard_sd15.json`);
+              }
+            }
+          } else {
+            // 保存配置参数到工作流中，供 generateImageWithWorkflow 使用
+            fullWorkflow = {
+              ...template,
+              _config: {
+                width: Number(imageWorkflowConfig._width) || 1024,
+                height: Number(imageWorkflowConfig._height) || 1024,
+                steps: Number(imageWorkflowConfig._steps) || 8,
+                model: imageWorkflowConfig._model as string || undefined,
+              }
+            };
+            console.log(`[Pipeline] Loaded workflow template: ${templateFile}`);
+          }
+        } else {
+          console.warn(`[Pipeline] Failed to load workflow template: ${templateFile}`);
+        }
+      } else {
+        // 如果是完整工作流对象，直接使用
+        fullWorkflow = imageWorkflowConfig;
+      }
+    } catch (e) {
+      console.warn(`[Pipeline] Failed to parse custom image workflow: ${e}`);
+    }
   }
 
   const projectCharacters = await db.query.characters.findMany({
@@ -75,6 +150,26 @@ export async function generateFrames(
   const aspectSize = project.aspectRatio === "9:16" ? "720x1280" : 
         project.aspectRatio === "1:1" ? "1024x1024" : "1280x720";
 
+  // 图片生成通用参数
+  const imageParams = {
+    size: aspectSize,
+    steps: 8,
+    cfg: 8.0,
+    denoise: 1.0,
+    style: project.style || "anime",
+    aspectRatio: project.aspectRatio || "16:9",
+    hasCustomWorkflow: !!fullWorkflow,
+    workflowFile: fullWorkflow ? (fullWorkflow._config as Record<string, unknown>)?.model || 'custom' : 'default',
+  };
+
+  console.log(`[Pipeline Frame] Generation params:`, {
+    projectId,
+    provider: useComfyUI ? 'ComfyUI' : 'OpenAI',
+    imageParams,
+    totalShots: projectShots.length,
+    totalCharacters: projectCharacters.length,
+  });
+
   for (const shot of projectShots) {
     // 检查是否需要处理
     let needFirstFrame = shot.startFrameDesc && (force || !shot.firstFrame);
@@ -92,6 +187,14 @@ export async function generateFrames(
     }
 
     console.log(`[Pipeline] Shot ${shot.sequence}: generating (first:${needFirstFrame ? 'yes' : 'skip'}, last:${needLastFrame ? 'yes' : 'skip'}, cascade:${cascadeFirstFrame})`);
+    console.log(`[Pipeline Frame] Shot params:`, {
+      shotId: shot.id,
+      sequence: shot.sequence,
+      sceneDescription: shot.sceneDescription?.slice(0, 100) || 'none',
+      startFrameDesc: shot.startFrameDesc?.slice(0, 100) || 'none',
+      endFrameDesc: shot.endFrameDesc?.slice(0, 100) || 'none',
+      imageParams,
+    });
 
     // 更新状态
     await db.update(shots)
@@ -108,7 +211,8 @@ export async function generateFrames(
           project.style || "anime",
           aspectSize,
           imageProvider,
-          useComfyUI
+          useComfyUI,
+          fullWorkflow
         );
 
         // 首帧生成后立即保存到数据库，让前端能实时看到
@@ -133,7 +237,8 @@ export async function generateFrames(
           project.style || "anime",
           aspectSize,
           imageProvider,
-          useComfyUI
+          useComfyUI,
+          fullWorkflow
         );
 
         await db.update(shots)
@@ -197,7 +302,8 @@ async function generateFirstFrame(
   style: string,
   aspectSize: string,
   imageProvider: ReturnType<typeof getImageProvider>,
-  useComfyUI: boolean
+  useComfyUI: boolean,
+  customWorkflow?: Record<string, unknown>
 ): Promise<string> {
   // 如果上一分镜有尾帧，首帧直接复用
   if (previousLastFrame) {
@@ -213,9 +319,27 @@ async function generateFirstFrame(
     previousShotEndFrame: undefined,
   });
 
+  // 如果有自定义工作流且使用 ComfyUI
+  if (customWorkflow && useComfyUI) {
+    const comfyProvider = imageProvider as ComfyUIImageProvider;
+    if (comfyProvider.generateImageWithWorkflow) {
+      console.log(`[Pipeline] Generating first frame with custom workflow`);
+      return comfyProvider.generateImageWithWorkflow(
+        firstFramePrompt,
+        customWorkflow,
+        { size: aspectSize },
+        async (promptId: string) => {
+          await db.update(shots)
+            .set({ firstFramePromptId: promptId })
+            .where(eq(shots.id, shot.id));
+        }
+      );
+    }
+  }
+
   return imageProvider.generateImage(
     firstFramePrompt,
-    { size: aspectSize },
+    { size: aspectSize, customWorkflow },
     // ComfyUI 模式：保存 promptId 用于恢复
     useComfyUI ? async (promptId: string) => {
       await db.update(shots)
@@ -234,7 +358,8 @@ async function generateLastFrame(
   style: string,
   aspectSize: string,
   imageProvider: ReturnType<typeof getImageProvider>,
-  useComfyUI: boolean
+  useComfyUI: boolean,
+  customWorkflow?: Record<string, unknown>
 ): Promise<string> {
   const lastFramePrompt = buildLastFramePrompt({
     shotDescription: shot.endFrameDesc!,
@@ -242,9 +367,27 @@ async function generateLastFrame(
     style,
   });
 
+  // 如果有自定义工作流且使用 ComfyUI
+  if (customWorkflow && useComfyUI) {
+    const comfyProvider = imageProvider as ComfyUIImageProvider;
+    if (comfyProvider.generateImageWithWorkflow) {
+      console.log(`[Pipeline] Generating last frame with custom workflow`);
+      return comfyProvider.generateImageWithWorkflow(
+        lastFramePrompt,
+        customWorkflow,
+        { size: aspectSize },
+        async (promptId: string) => {
+          await db.update(shots)
+            .set({ lastFramePromptId: promptId })
+            .where(eq(shots.id, shot.id));
+        }
+      );
+    }
+  }
+
   return imageProvider.generateImage(
     lastFramePrompt,
-    { size: aspectSize },
+    { size: aspectSize, customWorkflow },
     // ComfyUI 模式：保存 promptId 用于恢复
     useComfyUI ? async (promptId: string) => {
       await db.update(shots)

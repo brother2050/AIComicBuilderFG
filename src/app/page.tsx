@@ -331,6 +331,8 @@ export default function HomePage() {
 
   const handleGenerateScript = async (data: { title: string; idea: string; style: string }) => {
     setGenerating(true);
+    let projectId = null;
+    
     try {
       // 1. 创建项目
       const createRes = await fetch("/api/projects", {
@@ -344,7 +346,7 @@ export default function HomePage() {
         throw new Error("Failed to create project");
       }
 
-      const projectId = createResult.project.id;
+      projectId = createResult.project.id;
 
       // 2. 创建生成任务
       const taskRes = await fetch(`/api/projects/${projectId}/generate`, {
@@ -371,30 +373,17 @@ export default function HomePage() {
         }),
       });
 
-      // 4. 等待任务完成（轮询）
-      let completed = false;
-      while (!completed) {
-        await new Promise(resolve => setTimeout(resolve, 2000)); // 每2秒检查一次
-        try {
-          const statusRes = await fetch(`/api/projects/${projectId}/tasks?taskId=${taskResult.taskId}`);
-          const statusData = await statusRes.json();
-          if (statusData.task) {
-            if (statusData.task.status === "completed") {
-              completed = true;
-            } else if (statusData.task.status === "failed") {
-              throw new Error(statusData.task.error || "生成失败");
-            }
-          }
-        } catch (e) {
-          console.error("Polling error:", e);
-        }
-      }
-
-      // 5. 跳转到项目页面（此时剧本已生成完成）
+      // 4. 关闭对话框并跳转到项目页面
+      // 任务将在后台继续执行
       router.push(`/project/${projectId}`);
     } catch (error) {
       console.error("Failed to generate script:", error);
       alert(error instanceof Error ? error.message : "生成剧本失败，请重试");
+      
+      // 如果已创建项目但生成失败，跳转到项目页面手动重试
+      if (projectId) {
+        router.push(`/project/${projectId}`);
+      }
     } finally {
       setGenerating(false);
     }

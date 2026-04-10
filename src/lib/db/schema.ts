@@ -5,13 +5,22 @@ export const projects = sqliteTable("projects", {
   id: text("id").primaryKey(),
   title: text("title").notNull(),
   idea: text("idea").default(""),
+  // 中文剧本文本（分集前的原始文本）
+  scriptText: text("script_text").default(""),
+  // 解析后的JSON剧本
   script: text("script").default(""),
+  // 总集数
+  totalEpisodes: integer("total_episodes").default(1),
   style: text("style").default("anime"), // anime, realistic, 3d, cartoon
   aspectRatio: text("aspect_ratio").default("16:9"), // 16:9, 9:16, 1:1
   status: text("status", {
     enum: ["draft", "processing", "completed"],
   }).notNull().default("draft"),
   finalVideoUrl: text("final_video_url"),
+  // 项目级图片生成工作流配置（存储 JSON）
+  imageWorkflow: text("image_workflow"),
+  // 项目级视频生成工作流配置（存储 JSON）
+  videoWorkflow: text("video_workflow"),
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()
     .$defaultFn(() => new Date()),
@@ -99,6 +108,31 @@ export const tasks = sqliteTable("tasks", {
     .$defaultFn(() => new Date()),
 });
 
+// 模板表
+export const templates = sqliteTable("templates", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  description: text("description").default(""),
+  // 模板类型: character_description, image_workflow, video_workflow
+  type: text("type", {
+    enum: ["character_description", "image_workflow", "video_workflow"],
+  }).notNull(),
+  // 模板内容（Prompt 或 Workflow JSON）
+  systemPrompt: text("system_prompt").notNull(),
+  // 关联项目（可选，null 表示全局模板）
+  projectId: text("project_id").references(() => projects.id, {
+    onDelete: "cascade",
+  }),
+  // 是否为默认模板
+  isDefault: integer("is_default", { mode: "boolean" }).default(false),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+  updatedAt: integer("updated_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
 // 类型导出
 export type Project = typeof projects.$inferSelect;
 export type NewProject = typeof projects.$inferInsert;
@@ -110,3 +144,5 @@ export type Dialogue = typeof dialogues.$inferSelect;
 export type NewDialogue = typeof dialogues.$inferInsert;
 export type Task = typeof tasks.$inferSelect;
 export type NewTask = typeof tasks.$inferInsert;
+export type Template = typeof templates.$inferSelect;
+export type NewTemplate = typeof templates.$inferInsert;

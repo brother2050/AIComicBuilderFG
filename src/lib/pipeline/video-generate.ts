@@ -1,6 +1,8 @@
 /**
  * 视频生成流水线
  * 基于首尾帧生成视频
+ * 支持项目级自定义工作流
+ * 支持强制重新生成
  */
 import { getComfyUIVideoProvider } from "@/lib/ai";
 import { db, shots, dialogues, characters, projects } from "@/lib/db";
@@ -9,9 +11,11 @@ import { buildVideoPrompt } from "@/lib/prompts/video-generate";
 
 export async function generateVideos(
   projectId: string,
-  targetShotId?: string
+  targetShotId?: string,
+  options?: { force?: boolean }
 ): Promise<void> {
-  console.log(`[Pipeline] Starting video generation for project: ${projectId}`);
+  const force = options?.force ?? false;
+  console.log(`[Pipeline] Starting video generation for project: ${projectId}, force: ${force}`);
 
   const project = await db.query.projects.findFirst({
     where: eq(projects.id, projectId),
@@ -19,6 +23,17 @@ export async function generateVideos(
 
   if (!project) {
     throw new Error("Project not found");
+  }
+
+  // 解析项目级自定义工作流（如果存在）
+  let customWorkflow: Record<string, unknown> | undefined;
+  if (project.videoWorkflow) {
+    try {
+      customWorkflow = JSON.parse(project.videoWorkflow);
+      console.log(`[Pipeline] Using custom workflow for project: ${projectId}`);
+    } catch (e) {
+      console.warn(`[Pipeline] Failed to parse custom workflow: ${e}`);
+    }
   }
 
   const projectCharacters = await db.query.characters.findMany({
@@ -46,13 +61,13 @@ export async function generateVideos(
   const videoProvider = getComfyUIVideoProvider();
 
   for (const shot of projectShots) {
-    // 只处理已有帧但没有视频的分镜
+    // 只处理已有帧但没有视频的分镜（除非强制重新生成）
     if (!shot.firstFrame || !shot.lastFrame) {
       console.log(`[Pipeline] Skipping shot ${shot.sequence} - missing frames`);
       continue;
     }
 
-    if (shot.videoUrl) {
+    if (shot.videoUrl && !force) {
       console.log(`[Pipeline] Skipping shot ${shot.sequence} - video already exists`);
       continue;
     }
@@ -92,7 +107,7 @@ export async function generateVideos(
         lastFrame: shot.lastFrame,
         duration: shot.duration || 5,
         ratio: project.aspectRatio || "16:9",
-      });
+      }, customWorkflow);
 
       await db.update(shots)
         .set({ 

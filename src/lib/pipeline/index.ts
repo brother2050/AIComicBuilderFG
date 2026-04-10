@@ -2,7 +2,7 @@
  * 流水线导出
  */
 export { parseScript } from "./script-parse";
-export { generateScript } from "./script-generate";
+export { generateScript, generateScriptText, parseScriptText } from "./script-generate";
 export { extractCharacters } from "./character-extract";
 export { generateCharacterImages } from "./character-image";
 export { splitShots } from "./shot-split";

@@ -52,6 +52,7 @@ export async function splitShots(projectId: string): Promise<ShotSplitResult> {
     systemPrompt: shotSplitSystemPrompt,
     temperature: 0.7,
     maxTokens: 10000,
+    stream: true,
   });
 
   console.log("[Pipeline] Shot split AI response (first 500 chars):", response.substring(0, 500));

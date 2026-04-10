@@ -47,6 +47,7 @@ export async function parseScript(projectId: string): Promise<ScriptParseResult>
     systemPrompt: scriptParseSystemPrompt,
     temperature: 0.7,
     maxTokens: 8000,
+    stream: true,
   });
 
   // 解析JSON响应

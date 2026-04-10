@@ -3,7 +3,7 @@
  * 将长时间任务转为后台异步执行，支持进度查询
  */
 import { NextResponse } from "next/server";
-import { db, projects } from "@/lib/db";
+import { db, projects, tasks } from "@/lib/db";
 import { eq } from "drizzle-orm";
 import { createTask, getLatestTask, cleanupStaleTasks, type TaskType } from "@/lib/tasks";
 
@@ -47,7 +47,10 @@ export async function POST(
       force?: boolean;
     };
 
+    console.log(`[API Generate] Request received: projectId=${projectId}, action=${action}, shotId=${shotId || 'none'}, style=${style || 'none'}, force=${force || false}`);
+
     if (!action) {
+      console.warn(`[API Generate] Missing action parameter`);
       return NextResponse.json({ error: "Action is required" }, { status: 400 });
     }
 
@@ -57,13 +60,17 @@ export async function POST(
     });
 
     if (!project) {
+      console.warn(`[API Generate] Project not found: ${projectId}`);
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
 
     // script_generate 需要 idea
     if (action === "script_generate" && !idea) {
+      console.warn(`[API Generate] Missing idea for script_generate action`);
       return NextResponse.json({ error: "Idea is required for script generation" }, { status: 400 });
     }
+
+    console.log(`[API Generate] Validated: project=${project.title}, action=${action}`);
 
     // 创建新任务前，先清理该项目的僵尸任务（只有超时30分钟的running任务）
     const cleanupResult = await cleanupStaleTasks(projectId);
@@ -71,14 +78,23 @@ export async function POST(
       console.log(`[API] Cleanup before task: ${cleanupResult.cleaned} stale tasks, ${cleanupResult.recoveredImages} images recovered`);
     }
 
-    // 检查是否有正在运行的任务（除非是强制重新执行）
+    // 如果有正在运行的任务，自动取消它以便创建新任务
     const latestTask = await getLatestTask(projectId, ACTION_TO_TASK_TYPE[action]);
-    if (latestTask && latestTask.status === "running" && !force) {
-      return NextResponse.json({
-        error: "A task is already running for this type",
-        taskId: latestTask.taskId,
-        status: latestTask.status,
-      }, { status: 409 });
+    if (latestTask && latestTask.status === "running") {
+      if (force) {
+        // 强制模式：取消旧任务，继续创建新任务
+        await db.update(tasks)
+          .set({ status: "cancelled", error: "Cancelled to make room for new task" })
+          .where(eq(tasks.id, latestTask.taskId));
+        console.log(`[API] Cancelled running task ${latestTask.taskId} to start new one (force=${force})`);
+      } else {
+        // 非强制模式：返回冲突错误
+        return NextResponse.json({
+          error: "A task is already running for this type",
+          taskId: latestTask.taskId,
+          status: latestTask.status,
+        }, { status: 409 });
+      }
     }
 
     // 创建任务
@@ -90,7 +106,7 @@ export async function POST(
       force,
     });
 
-    console.log(`[API] Created async task: ${taskId} for action: ${action}, force: ${force}`);
+    console.log(`[API Generate] Task created successfully: taskId=${taskId}, action=${action}, shotId=${shotId || 'none'}, force=${force || false}`);
 
     // 返回任务ID，前端可通过轮询获取进度
     return NextResponse.json({
@@ -100,7 +116,11 @@ export async function POST(
     });
 
   } catch (error) {
-    console.error(`[API] Failed to create task:`, error);
+    console.error(`[API Generate] Failed to create task:`, {
+      projectId,
+      error: error instanceof Error ? error.message : "Unknown error",
+      stack: error instanceof Error ? error.stack : undefined,
+    });
     return NextResponse.json(
       {
         error: "Failed to create task",

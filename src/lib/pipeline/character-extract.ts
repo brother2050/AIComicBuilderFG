@@ -2,10 +2,10 @@
  * 角色提取流水线
  */
 import { getOpenAIProvider } from "@/lib/ai";
-import { db, characters, projects } from "@/lib/db";
-import { eq } from "drizzle-orm";
+import { db, characters, projects, templates } from "@/lib/db";
+import { eq, and } from "drizzle-orm";
 import { ulid } from "ulid";
-import { characterExtractSystemPrompt, buildCharacterExtractPrompt } from "@/lib/prompts/character-extract";
+import { buildCharacterExtractPrompt, DEFAULT_CHARACTER_DESCRIPTION_TEMPLATE } from "@/lib/prompts/templates/character-description";
 
 interface CharacterExtractResult {
   characters: Array<{
@@ -30,11 +30,27 @@ export async function extractCharacters(projectId: string): Promise<CharacterExt
   const openai = getOpenAIProvider();
   const style = project.style || "anime";
 
+  // 查找项目级模板，如果没有则使用默认模板
+  let systemPrompt = DEFAULT_CHARACTER_DESCRIPTION_TEMPLATE;
+  const projectTemplate = await db.query.templates.findFirst({
+    where: and(
+      eq(templates.type, "character_description"),
+      eq(templates.projectId, projectId)
+    ),
+  });
+  if (projectTemplate) {
+    systemPrompt = projectTemplate.systemPrompt;
+    console.log(`[Pipeline] Using custom template: ${projectTemplate.name}`);
+  } else {
+    console.log("[Pipeline] Using default character description template");
+  }
+
   const prompt = buildCharacterExtractPrompt(project.script, style);
   const response = await openai.generateText(prompt, {
-    systemPrompt: characterExtractSystemPrompt,
+    systemPrompt,
     temperature: 0.7,
     maxTokens: 8000,
+    stream: true,
   });
 
   console.log("[Pipeline] Character extract AI response (first 500 chars):", response.substring(0, 500));

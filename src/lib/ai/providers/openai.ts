@@ -2,11 +2,10 @@ import OpenAI from "openai";
 import type { AIProvider, TextOptions, ImageOptions } from "../types";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { ulid } from "ulid";
 
 /**
  * OpenAI Provider - 用于文本生成
- * 生文使用OpenAI API (GPT-4o等)
+ * 支持流式输出
  */
 export class OpenAIProvider implements AIProvider {
   private client: OpenAI;
@@ -19,18 +18,52 @@ export class OpenAIProvider implements AIProvider {
     model?: string; 
     uploadDir?: string; 
   }) {
-    this.client = new OpenAI({
-      apiKey: params?.apiKey || process.env.OPENAI_API_KEY,
-      baseURL: params?.baseURL || process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
+    const apiKey = params?.apiKey || process.env.OPENAI_API_KEY || "";
+    const baseURL = params?.baseURL || process.env.OPENAI_BASE_URL || "https://api.openai.com/v1";
+    const model = params?.model || process.env.OPENAI_MODEL || "gpt-4o";
+
+    console.log(`[OpenAI] Initializing provider:`, {
+      baseURL,
+      model,
+      hasApiKey: !!apiKey,
+      apiKeyPrefix: apiKey ? `${apiKey.slice(0, 8)}...` : "none",
+      timeout: "5min",
     });
-    this.defaultModel = params?.model || process.env.OPENAI_MODEL || "gpt-4o";
+
+    this.client = new OpenAI({
+      apiKey,
+      baseURL,
+      timeout: 300000, // 5分钟超时
+    });
+    this.defaultModel = model;
     this.uploadDir = params?.uploadDir || process.env.UPLOAD_DIR || "./uploads";
   }
 
   /**
    * 生成文本 - 使用OpenAI GPT模型
+   * 支持流式输出，通过 onChunk 回调实时推送内容
    */
   async generateText(prompt: string, options?: TextOptions): Promise<string> {
+    const useStream = options?.stream ?? false;
+    const model = options?.model || this.defaultModel;
+    const temperature = options?.temperature ?? 0.7;
+    const maxTokens = options?.maxTokens ?? 12000;
+
+    console.log(`[OpenAI] Text generation request:`, {
+      model,
+      temperature,
+      maxTokens,
+      stream: useStream,
+      hasSystemPrompt: !!options?.systemPrompt,
+      systemPromptLength: options?.systemPrompt?.length || 0,
+      promptLength: prompt.length,
+      promptPreview: prompt.slice(0, 200) + (prompt.length > 200 ? "..." : ""),
+      hasImages: !!options?.images?.length,
+      imageCount: options?.images?.length || 0,
+    });
+
+    const startTime = Date.now();
+
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
     
     if (options?.systemPrompt) {
@@ -60,14 +93,64 @@ export class OpenAIProvider implements AIProvider {
       messages.push({ role: "user", content: prompt });
     }
 
-    const response = await this.client.chat.completions.create({
-      model: options?.model || this.defaultModel,
-      messages,
-      temperature: options?.temperature ?? 0.7,
-      max_tokens: options?.maxTokens,
-    });
+    try {
+      // 流式输出
+      if (useStream) {
+        const stream = await this.client.chat.completions.create({
+          model,
+          messages,
+          temperature,
+          max_tokens: maxTokens,
+          stream: true,
+        });
 
-    return response.choices[0]?.message?.content || "";
+        let fullContent = "";
+        let chunkCount = 0;
+
+        for await (const chunk of stream) {
+          const content = chunk.choices[0]?.delta?.content || "";
+          if (content) {
+            fullContent += content;
+            chunkCount++;
+            // 调用回调（如果有）
+            if (options?.onChunk) {
+              options.onChunk(content);
+            }
+          }
+        }
+
+        const duration = Date.now() - startTime;
+        console.log(`[OpenAI] Stream completed:`, {
+          duration: `${duration}ms`,
+          chunks: chunkCount,
+          responseLength: fullContent.length,
+          responsePreview: fullContent.slice(0, 300) + (fullContent.length > 300 ? "..." : ""),
+        });
+        return fullContent;
+      }
+
+      // 非流式输出
+      const response = await this.client.chat.completions.create({
+        model,
+        messages,
+        temperature,
+        max_tokens: maxTokens,
+      });
+
+      const duration = Date.now() - startTime;
+      const content = response.choices[0]?.message?.content || "";
+      console.log(`[OpenAI] Text generation completed:`, {
+        duration: `${duration}ms`,
+        responseLength: content.length,
+        responsePreview: content.slice(0, 300) + (content.length > 300 ? "..." : ""),
+      });
+      
+      return content;
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      console.error(`[OpenAI] Text generation failed after ${duration}ms:`, error);
+      throw error;
+    }
   }
 
   /**

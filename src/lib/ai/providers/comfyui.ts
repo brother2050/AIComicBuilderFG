@@ -2,12 +2,13 @@ import type { AIProvider, VideoProvider, ImageOptions, VideoGenerateParams, Vide
 import { ulid } from "ulid";
 import * as fs from "fs";
 import * as path from "path";
+import { loadWorkflowTemplate, applyWorkflowParams, type WorkflowParams } from "./workflow-template";
 
 export interface ComfyUIProviderConfig {
   apiUrl?: string;
   workflowName?: string;
   uploadDir?: string;
-  defaultModel?: string;
+  defaultWorkflow?: string; // 默认工作流模板文件名
   videoWorkflowName?: string;
   videoApiUrl?: string; // 独立的视频生成 API URL
 }
@@ -64,212 +65,6 @@ async function readImageAsBase64(imagePath: string): Promise<string> {
 }
 
 /**
- * 创建文本到图像的 ComfyUI 工作流 (Z-Image-Turbo)
- */
-function createTextToImageWorkflow(
-  prompt: string,
-  options?: { width?: number; height?: number; steps?: number; model?: string }
-): Record<string, unknown> {
-  const width = options?.width || 1024;
-  const height = options?.height || 1024;
-  const steps = options?.steps || 8;
-  const model = options?.model || "z_image_turbo_bf16.safetensors";
-
-  return {
-    "3": {
-      inputs: { text: prompt, clip: ["30", 0] },
-      class_type: "CLIPTextEncode",
-      _meta: { title: "Positive Prompt" },
-    },
-    "4": {
-      inputs: { 
-        text: "low quality, blurry, deformed, bad anatomy, watermark, text, logo",
-        clip: ["30", 0] 
-      },
-      class_type: "CLIPTextEncode",
-      _meta: { title: "Negative Prompt" },
-    },
-    "5": {
-      inputs: { samples: ["6", 0], vae: ["29", 0] },
-      class_type: "VAEDecode",
-      _meta: { title: "VAE Decode" },
-    },
-    "6": {
-      inputs: {
-        model: ["11", 0],
-        seed: Math.floor(Math.random() * 1000000000),
-        steps: steps,
-        cfg: 1.0,
-        sampler_name: "euler",
-        scheduler: "normal",
-        positive: ["3", 0],
-        negative: ["4", 0],
-        latent_image: ["8", 0],
-        denoise: 1.0,
-      },
-      class_type: "KSampler",
-      _meta: { title: "KSampler" },
-    },
-    "8": {
-      inputs: { width, height, batch_size: 1 },
-      class_type: "EmptySD3LatentImage",
-      _meta: { title: "Empty Latent Image" },
-    },
-    "11": {
-      inputs: { model: ["28", 0], version: 3, shift: 1.0 },
-      class_type: "ModelSamplingAuraFlow",
-      _meta: { title: "Model Sampling" },
-    },
-    "28": {
-      inputs: { unet_name: model, weight_dtype: "default" },
-      class_type: "UNETLoader",
-      _meta: { title: "UNet Loader" },
-    },
-    "29": {
-      inputs: { vae_name: "ae.safetensors" },
-      class_type: "VAELoader",
-      _meta: { title: "VAE Loader" },
-    },
-    "30": {
-      inputs: { clip_name: "qwen_3_4b.safetensors", type: "sd3" },
-      class_type: "CLIPLoader",
-      _meta: { title: "CLIP Loader" },
-    },
-    "10": {
-      inputs: {
-        images: ["5", 0],
-        format: "png",
-        filename_prefix: "comfyui_gen",
-      },
-      class_type: "SaveImage",
-      _meta: { title: "Save Image" },
-    },
-  };
-}
-
-/**
- * 创建视频生成工作流
- * 基于首尾帧插值生成视频
- */
-function createVideoWorkflow(
-  prompt: string,
-  firstFrameFilename: string | null,
-  lastFrameFilename: string | null,
-  options?: { duration?: number; width?: number; height?: number }
-): Record<string, unknown> {
-  const duration = options?.duration || 5;
-  const width = options?.width || 1024;
-  const height = options?.height || 1024;
-
-  const workflow: Record<string, unknown> = {
-    "5": {
-      inputs: { text: prompt, clip: ["32", 0] },
-      class_type: "CLIPTextEncode",
-      _meta: { title: "Positive Prompt" },
-    },
-    "6": {
-      inputs: {
-        text: "low quality, blurry, distorted, artifacts",
-        clip: ["32", 0]
-      },
-      class_type: "CLIPTextEncode",
-      _meta: { title: "Negative Prompt" },
-    },
-    "32": {
-      inputs: { clip_name: "t5xxl_fp8_e4m3fn.safetensors", type: "sd3" },
-      class_type: "CLIPLoader",
-      _meta: { title: "CLIP Loader" },
-    },
-  };
-
-  // 如果有首帧图片，添加LoadImage节点
-  if (firstFrameFilename) {
-    workflow["11"] = {
-      inputs: { image: firstFrameFilename, upload: "workflow" },
-      class_type: "LoadImage",
-      _meta: { title: "Load First Frame" },
-    };
-  }
-
-  // 如果有尾帧图片，添加LoadImage节点
-  if (lastFrameFilename) {
-    workflow["12"] = {
-      inputs: { image: lastFrameFilename, upload: "workflow" },
-      class_type: "LoadImage",
-      _meta: { title: "Load Last Frame" },
-    };
-  }
-
-  // 根据可用节点创建视频生成采样器
-  // 这里需要根据实际的ComfyUI视频生成工作流进行调整
-  // 示例使用 AnimateDiff 或类似节点
-  workflow["20"] = {
-    inputs: {
-      model: ["30", 0],
-      animatediff_batch_size: 1,
-    },
-    class_type: "AnimateDiffLoader",
-    _meta: { title: "AnimateDiff Loader" },
-  };
-
-  workflow["21"] = {
-    inputs: {
-      sample: ["22", 0],
-      previews: false,
-    },
-    class_type: "VAEDecode_Tiled",
-    _meta: { title: "VAE Decode" },
-  };
-
-  workflow["22"] = {
-    inputs: {
-      model: ["20", 0],
-      seed: Math.floor(Math.random() * 1000000000),
-      steps: 20,
-      cfg: 7.0,
-      sampler_name: "euler",
-      scheduler: "normal",
-      positive: ["5", 0],
-      negative: ["6", 0],
-      latent_image: ["23", 0],
-      denoise: 1.0,
-    },
-    class_type: "KSampler",
-    _meta: { title: "Video Sampler" },
-  };
-
-  workflow["23"] = {
-    inputs: {
-      width,
-      height,
-      length: Math.max(duration * 8, 16), // 每秒约8帧
-      batch_size: 1,
-    },
-    class_type: "EmptyLatentVideo",
-    _meta: { title: "Empty Latent Video" },
-  };
-
-  workflow["30"] = {
-    inputs: { unet_name: "svd_xt.safetensors", weight_dtype: "default" },
-    class_type: "UNETLoader",
-    _meta: { title: "Video UNet Loader" },
-  };
-
-  workflow["24"] = {
-    inputs: {
-      images: ["21", 0],
-      format: "mp4",
-      fps: 8,
-      filename_prefix: "comfyui_video",
-    },
-    class_type: "VHS_VideoCombine",
-    _meta: { title: "Video Combine" },
-  };
-
-  return workflow;
-}
-
-/**
  * ComfyUI API 客户端
  */
 class ComfyUIAPIClient {
@@ -280,6 +75,9 @@ class ComfyUIAPIClient {
   }
 
   async queuePrompt(prompt: Record<string, unknown>): Promise<{ prompt_id: string }> {
+    const nodeCount = Object.keys(prompt).filter(k => !k.startsWith('_')).length;
+    console.log(`[ComfyUI API] POST /api/prompt - nodes=${nodeCount}`);
+    
     const response = await fetch(`${this.baseUrl}api/prompt`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -288,15 +86,20 @@ class ComfyUIAPIClient {
 
     if (!response.ok) {
       const error = await response.text();
+      console.error(`[ComfyUI API] POST /api/prompt failed: status=${response.status}, error=${error}`);
       throw new Error(`ComfyUI API 错误: ${response.status} - ${error}`);
     }
 
-    return response.json();
+    const result = response.json();
+    console.log(`[ComfyUI API] POST /api/prompt success: prompt_id=${(await result).prompt_id}`);
+    return result;
   }
 
   async getHistory(promptId: string): Promise<Record<string, unknown>> {
+    console.log(`[ComfyUI API] GET /api/history/${promptId}`);
     const response = await fetch(`${this.baseUrl}api/history/${promptId}`);
     if (!response.ok) {
+      console.error(`[ComfyUI API] GET /api/history/${promptId} failed: status=${response.status}`);
       throw new Error(`ComfyUI History API 错误: ${response.status}`);
     }
     return response.json();
@@ -305,12 +108,17 @@ class ComfyUIAPIClient {
   async getQueueStatus(): Promise<{ queue_running: unknown[]; queue_pending: unknown[] }> {
     const response = await fetch(`${this.baseUrl}api/queue`, { method: "GET" });
     if (!response.ok) {
+      console.error(`[ComfyUI API] GET /api/queue failed: status=${response.status}`);
       throw new Error(`ComfyUI Queue API 错误: ${response.status}`);
     }
-    return response.json();
+    const result = await response.json();
+    console.log(`[ComfyUI API] Queue status: running=${result.queue_running?.length || 0}, pending=${result.queue_pending?.length || 0}`);
+    return result;
   }
 
   async uploadImage(imageData: Buffer, filename: string): Promise<{ name: string }> {
+    console.log(`[ComfyUI API] POST /api/upload/image - filename=${filename}, size=${imageData.length} bytes`);
+    
     const formData = new FormData();
     const blob = new Blob([new Uint8Array(imageData)]);
     formData.append("image", blob, filename);
@@ -324,10 +132,13 @@ class ComfyUIAPIClient {
 
     if (!response.ok) {
       const error = await response.text();
+      console.error(`[ComfyUI API] POST /api/upload/image failed: status=${response.status}, error=${error}`);
       throw new Error(`ComfyUI 上传图片失败: ${response.status} - ${error}`);
     }
 
-    return response.json();
+    const result = await response.json();
+    console.log(`[ComfyUI API] POST /api/upload/image success: name=${result.name}`);
+    return result;
   }
 
   getImageUrl(filename: string, subfolder: string = "", folderType: string = "output"): string {
@@ -337,11 +148,31 @@ class ComfyUIAPIClient {
 
   async downloadImage(filename: string, subfolder: string = ""): Promise<Buffer> {
     const url = this.getImageUrl(filename, subfolder);
+    console.log(`[ComfyUI API] GET /api/view - filename=${filename}, subfolder=${subfolder}`);
     const response = await fetch(url);
     if (!response.ok) {
+      console.error(`[ComfyUI API] GET /api/view failed: status=${response.status}, filename=${filename}`);
       throw new Error(`下载图片失败: ${response.status}`);
     }
-    return Buffer.from(await response.arrayBuffer());
+    const buffer = Buffer.from(await response.arrayBuffer());
+    console.log(`[ComfyUI API] Downloaded image: ${filename}, size=${buffer.length} bytes`);
+    return buffer;
+  }
+}
+
+/**
+ * ComfyUI 视频生成专用客户端（包含上传目录）
+ */
+class ComfyUIVideoClient extends ComfyUIAPIClient {
+  private uploadDir: string;
+
+  constructor(baseUrl: string, uploadDir: string) {
+    super(baseUrl);
+    this.uploadDir = uploadDir;
+  }
+
+  getUploadDir(): string {
+    return this.uploadDir;
   }
 }
 
@@ -352,13 +183,14 @@ class ComfyUIAPIClient {
 export class ComfyUIImageProvider implements AIProvider {
   private apiUrl: string;
   private uploadDir: string;
-  private defaultModel: string;
+  private defaultWorkflow: string;
   private client: ComfyUIAPIClient | null = null;
 
   constructor(config?: ComfyUIProviderConfig) {
     this.apiUrl = config?.apiUrl || process.env.COMFYUI_API_URL || "";
     this.uploadDir = config?.uploadDir || process.env.UPLOAD_DIR || "./uploads";
-    this.defaultModel = config?.defaultModel || process.env.COMFYUI_IMAGE_MODEL || "z_image_turbo_bf16.safetensors";
+    // 默认使用 z_image_turbo 工作流
+    this.defaultWorkflow = config?.defaultWorkflow || "image_z_image_turbo.json";
   }
 
   private getClient(): ComfyUIAPIClient {
@@ -374,6 +206,10 @@ export class ComfyUIImageProvider implements AIProvider {
 
   getUploadDir(): string {
     return this.uploadDir;
+  }
+
+  getDefaultWorkflow(): string {
+    return this.defaultWorkflow;
   }
 
   /**
@@ -394,20 +230,181 @@ export class ComfyUIImageProvider implements AIProvider {
     options?: ImageOptions,
     onPromptIdSubmit?: (promptId: string) => void | Promise<void>
   ): Promise<string> {
-    console.log(`[ComfyUI Image] Generating image with prompt: ${prompt.substring(0, 100)}...`);
+    console.log(`[ComfyUI Image] Request params:`, {
+      prompt: prompt.slice(0, 200) + (prompt.length > 200 ? "..." : ""),
+      promptLength: prompt.length,
+      size: options?.size || "1024x1024",
+      steps: options?.steps || 8,
+      hasCustomWorkflow: !!options?.customWorkflow,
+      hasReferenceImage: !!options?.referenceImage,
+      workflowFile: options?.workflowFile || this.defaultWorkflow,
+    });
 
     const client = this.getClient();
     const width = options?.size ? parseInt(options.size.split('x')[0]) : 1024;
     const height = options?.size ? parseInt(options.size.split('x')[1]) : 1024;
-    const steps = 8;
+    const steps = options?.steps || 8;
 
     try {
-      // 创建工作流
-      const workflow = createTextToImageWorkflow(prompt, { width, height, steps, model: this.defaultModel });
+      // 如果有自定义工作流 JSON，直接使用
+      if (options?.customWorkflow) {
+        console.log(`[ComfyUI Image] Using custom workflow JSON`);
+        return this.generateImageWithWorkflow(prompt, options.customWorkflow, options, onPromptIdSubmit);
+      }
+
+      // 加载工作流模板
+      const workflowFile = options?.workflowFile || this.defaultWorkflow;
+      let templateWorkflow = loadWorkflowTemplate(workflowFile);
+      
+      if (!templateWorkflow) {
+        throw new Error(`Failed to load workflow template: ${workflowFile}`);
+      }
+      
+      // 检测是否是子图格式（包含 definitions.subgraphs）
+      const templateDefinitions = templateWorkflow.definitions as Record<string, unknown> | undefined;
+      if (templateDefinitions?.subgraphs) {
+        console.warn(`[ComfyUI Image] Template ${workflowFile} uses subgraph format, trying API version...`);
+        const apiVersion = workflowFile.replace('.json', '_api.json');
+        const apiTemplate = loadWorkflowTemplate(apiVersion);
+        if (apiTemplate) {
+          templateWorkflow = apiTemplate;
+          console.log(`[ComfyUI Image] Using API workflow template: ${apiVersion}`);
+        } else {
+          // 子图格式且没有 API 版本，使用默认的 standard_sd15
+          console.warn(`[ComfyUI Image] No API version found, falling back to standard_sd15.json`);
+          const fallback = loadWorkflowTemplate('standard_sd15.json');
+          if (fallback) {
+            templateWorkflow = fallback;
+          }
+        }
+      }
+      
+      console.log(`[ComfyUI Image] Loaded workflow template: ${workflowFile}`);
+
+      // 构建参数
+      const params: WorkflowParams = {
+        prompt,
+        negative_prompt: options?.quality === "hd" 
+          ? "low quality, blurry, deformed, bad anatomy" 
+          : "low quality, blurry, deformed, bad anatomy, watermark, text, logo",
+        width,
+        height,
+        steps,
+        cfg: options?.cfg ?? 8.0,
+        denoise: options?.denoise ?? 1.0,
+        seed: options?.seed ?? Math.floor(Math.random() * 1000000000),
+        // 模型参数（如果不指定则使用模板默认值）
+        model: options?.model,
+        vae: options?.vae,
+        clip: options?.clip,
+        lora: options?.lora,
+        lora_strength_model: options?.lora_strength_model ?? 1.0,
+        lora_strength_clip: options?.lora_strength_clip ?? 1.0,
+      };
+
+      console.log(`[ComfyUI Image] Params for workflow:`, {
+        ...params,
+        prompt: (params.prompt || '').slice(0, 100) + "...",
+        negative_prompt: (params.negative_prompt || '').slice(0, 100) + "...",
+        model: params.model || 'template default',
+        vae: params.vae || 'template default',
+        clip: params.clip || 'template default',
+        lora: params.lora || 'template default',
+        lora_strength_model: params.lora_strength_model,
+        lora_strength_clip: params.lora_strength_clip,
+      });
+
+      // 应用参数到工作流
+      const workflow = applyWorkflowParams(templateWorkflow, params);
+      console.log(`[ComfyUI Image] Workflow prepared, applying params...`);
+
+      // 记录关键节点的输入值，用于调试
+      const keyNodes = Object.entries(workflow).filter(([id, node]) => {
+        const classType = (node as Record<string, unknown>).class_type as string;
+        return ['UNETLoader', 'VAELoader', 'CLIPLoader', 'LoraLoader', 'KSampler'].includes(classType);
+      });
+      console.log(`[ComfyUI Image] Key nodes inputs:`, 
+        keyNodes.map(([id, node]) => ({
+          node: id,
+          class_type: (node as Record<string, unknown>).class_type,
+          inputs: (node as Record<string, unknown>).inputs,
+        }))
+      );
+
+      // 提交任务
+      const startTime = Date.now();
+      const { prompt_id } = await client.queuePrompt(workflow);
+      console.log(`[ComfyUI Image] Prompt queued, ID: ${prompt_id}, elapsed: ${Date.now() - startTime}ms`);
+
+      // 提交后立即回调，保存 promptId 用于恢复
+      if (onPromptIdSubmit) {
+        await onPromptIdSubmit(prompt_id);
+      }
+
+      // 轮询等待完成
+      console.log(`[ComfyUI Image] Waiting for completion...`);
+      const result = await this.waitForCompletion(client, prompt_id);
+      
+      if (result.status === "completed" && result.filePath) {
+        console.log(`[ComfyUI Image] Completed:`, {
+          filePath: result.filePath,
+          totalTime: `${Date.now() - startTime}ms`,
+        });
+        return result.filePath;
+      }
+
+      throw new Error(result.error || "ComfyUI 图片生成失败");
+    } catch (error) {
+      console.error(`[ComfyUI Image] Failed:`, error);
+      throw new Error(`ComfyUI 图片生成失败: ${error instanceof Error ? error.message : "未知错误"}`);
+    }
+  }
+
+  /**
+   * 使用自定义工作流生成图片
+   * @param prompt 提示词
+   * @param customWorkflow 自定义工作流 JSON
+   * @param options 图片选项
+   * @param onPromptIdSubmit 提交后回调
+   */
+  async generateImageWithWorkflow(
+    prompt: string,
+    customWorkflow: Record<string, unknown>,
+    options?: ImageOptions,
+    onPromptIdSubmit?: (promptId: string) => void | Promise<void>
+  ): Promise<string> {
+    console.log(`[ComfyUI Image] Generating image with custom workflow`);
+
+    const client = this.getClient();
+    
+    // 优先使用 _config 中的配置（从模板加载时设置）
+    const config = customWorkflow._config as Record<string, unknown> | undefined;
+    const width = config?.width as number || options?.size ? parseInt(options!.size!.split('x')[0]) : 1024;
+    const height = config?.height as number || options?.size ? parseInt(options!.size!.split('x')[1]) : 1024;
+    const steps = config?.steps as number || options?.steps || 8;
+    const cfg = config?.cfg as number || 8.0;
+    const model = config?.model as string || '';
+    const denoise = config?.denoise as number || 1.0;
+
+    try {
+      // 应用工作流并替换占位符
+      const workflow = applyWorkflowParams(customWorkflow, {
+        prompt,
+        negative_prompt: options?.quality === "hd" 
+          ? "low quality, blurry, deformed, bad anatomy" 
+          : "low quality, blurry, deformed, bad anatomy, watermark, text, logo",
+        width,
+        height,
+        steps,
+        cfg,
+        seed: Math.floor(Math.random() * 1000000000),
+        model,
+        denoise,
+      });
 
       // 提交任务
       const { prompt_id } = await client.queuePrompt(workflow);
-      console.log(`[ComfyUI Image] Prompt submitted, ID: ${prompt_id}`);
+      console.log(`[ComfyUI Image] Custom workflow prompt submitted, ID: ${prompt_id}`);
 
       // 提交后立即回调，保存 promptId 用于恢复
       if (onPromptIdSubmit) {
@@ -529,32 +526,49 @@ export class ComfyUIImageProvider implements AIProvider {
 export class ComfyUIVideoProvider implements VideoProvider {
   private apiUrl: string;
   private uploadDir: string;
-  private videoWorkflowName: string;
-  private client: ComfyUIAPIClient | null = null;
+  private defaultVideoWorkflow: string;
+  private client: ComfyUIVideoClient | null = null;
 
   constructor(config?: ComfyUIProviderConfig) {
     // 优先使用独立的视频 API URL，否则回退到通用 COMFYUI_API_URL
     this.apiUrl = config?.videoApiUrl || process.env.COMFYUI_VIDEO_API_URL || process.env.COMFYUI_API_URL || "";
     this.uploadDir = config?.uploadDir || process.env.UPLOAD_DIR || "./uploads";
-    this.videoWorkflowName = config?.videoWorkflowName || "video_generation";
+    this.defaultVideoWorkflow = config?.videoWorkflowName || "video_wan22_i2v.json";
   }
 
-  private getClient(): ComfyUIAPIClient {
+  private getClient(): ComfyUIVideoClient {
     if (!this.client) {
-      this.client = new ComfyUIAPIClient(this.apiUrl);
+      this.client = new ComfyUIVideoClient(this.apiUrl, this.uploadDir);
     }
     return this.client;
   }
 
   /**
    * 生成视频 - 使用ComfyUI API
-   * 支持首尾帧插值模式
+   * 支持首尾帧插值模式和自定义工作流
+   * @param params 视频生成参数
+   * @param customWorkflow 可选的自定义工作流 JSON
    */
-  async generateVideo(params: VideoGenerateParams): Promise<VideoGenerateResult> {
-    console.log(`[ComfyUI Video] Generating video...`);
+  async generateVideo(
+    params: VideoGenerateParams,
+    customWorkflow?: Record<string, unknown>
+  ): Promise<VideoGenerateResult> {
+    console.log(`[ComfyUI Video] ========== Video Generation Request ==========`);
+    console.log(`[ComfyUI Video] Parameters:`, {
+      prompt: {
+        text: params.prompt.slice(0, 200) + (params.prompt.length > 200 ? "..." : ""),
+        length: params.prompt.length,
+      },
+      ratio: params.ratio,
+      duration: params.duration,
+      firstFrame: params.firstFrame ? path.basename(params.firstFrame) : null,
+      lastFrame: params.lastFrame ? path.basename(params.lastFrame) : null,
+      hasCustomWorkflow: !!customWorkflow,
+      workflowNodes: customWorkflow ? Object.keys(customWorkflow).length : 0,
+    });
+    console.log(`[ComfyUI Video] API URL: ${this.apiUrl}`);
 
     const client = this.getClient();
-    const baseUrl = normalizeUrl(this.apiUrl);
 
     try {
       // 解析比例
@@ -562,6 +576,8 @@ export class ComfyUIVideoProvider implements VideoProvider {
       if (params.ratio === "16:9") { width = 1280; height = 720; }
       else if (params.ratio === "9:16") { width = 720; height = 1280; }
       else if (params.ratio === "1:1") { width = 1024; height = 1024; }
+
+      console.log(`[ComfyUI Video] Resolution: ${width}x${height}`);
 
       // 上传首帧和尾帧图片
       let firstFrameFilename: string | null = null;
@@ -585,33 +601,143 @@ export class ComfyUIVideoProvider implements VideoProvider {
         console.log(`[ComfyUI Video] Last frame uploaded: ${lastFrameFilename}`);
       }
 
-      // 创建视频生成工作流
-      const workflow = createVideoWorkflow(
-        params.prompt,
-        firstFrameFilename,
-        lastFrameFilename,
-        { duration: params.duration || 5, width, height }
-      );
+      // 创建视频生成工作流：优先使用自定义工作流
+      let workflow: Record<string, unknown>;
+      if (customWorkflow) {
+        workflow = this.applyWorkflowWithParams(customWorkflow, {
+          prompt: params.prompt,
+          firstFrame: firstFrameFilename,
+          lastFrame: lastFrameFilename,
+          duration: params.duration || 5,
+          width,
+          height,
+        });
+        console.log(`[ComfyUI Video] Using custom workflow (${Object.keys(workflow).length} nodes)`);
+      } else {
+        // 加载视频工作流模板
+        const templateWorkflow = loadWorkflowTemplate(this.defaultVideoWorkflow);
+        if (!templateWorkflow) {
+          throw new Error(`Failed to load video workflow template: ${this.defaultVideoWorkflow}`);
+        }
+        
+        workflow = this.applyWorkflowWithParams(templateWorkflow, {
+          prompt: params.prompt,
+          firstFrame: firstFrameFilename,
+          lastFrame: lastFrameFilename,
+          duration: params.duration || 5,
+          width,
+          height,
+        });
+        console.log(`[ComfyUI Video] Using default video workflow: ${this.defaultVideoWorkflow}`);
+      }
 
       // 提交任务
+      console.log(`[ComfyUI Video] Submitting prompt to queue...`);
       const { prompt_id } = await client.queuePrompt(workflow);
-      console.log(`[ComfyUI Video] Prompt submitted, ID: ${prompt_id}`);
+      console.log(`[ComfyUI Video] Prompt queued, ID: ${prompt_id}`);
 
       // 轮询等待完成
+      const startTime = Date.now();
+      console.log(`[ComfyUI Video] Waiting for completion...`);
       const result = await this.waitForVideoCompletion(client, prompt_id);
+      
+      const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+      console.log(`[ComfyUI Video] ========== Video Generation Completed ==========`);
+      console.log(`[ComfyUI Video] Duration: ${duration}s, File: ${result.filePath}`);
+      
       return result;
     } catch (error) {
+      console.error(`[ComfyUI Video] ========== Video Generation Failed ==========`);
+      console.error(`[ComfyUI Video] Error:`, {
+        message: error instanceof Error ? error.message : "Unknown error",
+        stack: error instanceof Error ? error.stack : undefined,
+      });
       throw new Error(`ComfyUI 视频生成失败: ${error instanceof Error ? error.message : "未知错误"}`);
     }
   }
 
+  /**
+   * 将参数应用到工作流
+   * 支持占位符替换：
+   * - {{prompt}} - 正向提示词
+   * - {{negative_prompt}} - 负向提示词
+   * - {{first_frame}} - 首帧文件名
+   * - {{last_frame}} - 尾帧文件名
+   * - {{width}} - 宽度
+   * - {{height}} - 高度
+   * - {{duration}} - 时长
+   * - {{frame_length}} - 帧数 (duration * 8)
+   */
+  private applyWorkflowWithParams(
+    workflow: Record<string, unknown>,
+    params: {
+      prompt: string;
+      firstFrame: string | null;
+      lastFrame: string | null;
+      duration: number;
+      width: number;
+      height: number;
+    }
+  ): Record<string, unknown> {
+    const frameLength = Math.max(params.duration * 8, 16);
+    const defaultNegativePrompt = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量";
+
+    const result: Record<string, unknown> = {};
+
+    for (const [nodeId, nodeConfig] of Object.entries(workflow)) {
+      if (typeof nodeConfig !== "object" || nodeConfig === null) {
+        result[nodeId] = nodeConfig;
+        continue;
+      }
+
+      const config = nodeConfig as Record<string, unknown>;
+      const inputs = (config.inputs as Record<string, unknown>) || {};
+      const newInputs: Record<string, unknown> = {};
+
+      for (const [key, value] of Object.entries(inputs)) {
+        if (typeof value === "string") {
+          // 替换占位符
+          let newValue = value
+            .replace(/\{\{prompt\}\}/g, params.prompt)
+            .replace(/\{\{negative_prompt\}\}/g, defaultNegativePrompt)
+            .replace(/\{\{first_frame\}\}/g, params.firstFrame || "")
+            .replace(/\{\{last_frame\}\}/g, params.lastFrame || "")
+            .replace(/\{\{width\}\}/g, String(params.width))
+            .replace(/\{\{height\}\}/g, String(params.height))
+            .replace(/\{\{duration\}\}/g, String(params.duration))
+            .replace(/\{\{frame_length\}\}/g, String(frameLength));
+          newInputs[key] = newValue;
+        } else if (Array.isArray(value)) {
+          // 处理数组值（如节点引用 ["nodeId", 0]）
+          newInputs[key] = value.map(v => {
+            if (typeof v === "string") {
+              return v
+                .replace(/\{\{prompt\}\}/g, params.prompt)
+                .replace(/\{\{negative_prompt\}\}/g, defaultNegativePrompt)
+                .replace(/\{\{first_frame\}\}/g, params.firstFrame || "")
+                .replace(/\{\{last_frame\}\}/g, params.lastFrame || "");
+            }
+            return v;
+          });
+        } else {
+          newInputs[key] = value;
+        }
+      }
+
+      result[nodeId] = { ...config, inputs: newInputs };
+    }
+
+    return result;
+  }
+
   private async waitForVideoCompletion(
-    client: ComfyUIAPIClient,
+    client: ComfyUIVideoClient,
     promptId: string,
     maxRetries: number = 300,
     intervalMs: number = 2000
   ): Promise<VideoGenerateResult> {
     let retryCount = 0;
+    const uploadDir = client.getUploadDir();
 
     while (retryCount < maxRetries) {
       await new Promise(resolve => setTimeout(resolve, intervalMs));
@@ -628,7 +754,7 @@ export class ComfyUIVideoProvider implements VideoProvider {
 
       if (isRunning) {
         if (retryCount % 30 === 0) {
-          console.log(`[ComfyUI Video] Task running, retry ${retryCount}/${maxRetries}`);
+          console.log(`[ComfyUI Video] Task running, retry ${retryCount}/${maxRetries}, elapsed=${((retryCount * intervalMs) / 1000).toFixed(0)}s`);
         }
         continue;
       }
@@ -664,7 +790,7 @@ export class ComfyUIVideoProvider implements VideoProvider {
 
                 const buffer = Buffer.from(await response.arrayBuffer());
                 const filename = `${ulid()}.mp4`;
-                const dir = path.join(this.uploadDir, "videos");
+                const dir = path.join(uploadDir, "videos");
                 fs.mkdirSync(dir, { recursive: true });
                 const filepath = path.join(dir, filename);
                 fs.writeFileSync(filepath, buffer);
@@ -686,7 +812,7 @@ export class ComfyUIVideoProvider implements VideoProvider {
       }
     }
 
-    throw new Error("视频生成任务超时");
+    throw new Error(`视频生成任务超时 (${(maxRetries * intervalMs / 1000).toFixed(0)}s)`);
   }
 }
 

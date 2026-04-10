@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1775727169674,
+      "tag": "0000_puzzling_gauntlet",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1712712000000,
+      "tag": "0001_add_image_workflow",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1744300800000,
+      "tag": "0002_add_templates",
+      "breakpoints": true
+    }
+  ]
+}

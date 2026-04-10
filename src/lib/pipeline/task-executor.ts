@@ -8,6 +8,8 @@ import { updateTaskStatus } from "@/lib/tasks";
 import {
   parseScript,
   generateScript,
+  generateScriptText,
+  parseScriptText,
   extractCharacters,
   generateCharacterImages,
   splitShots,
@@ -34,7 +36,18 @@ export async function executeTask(
   options?: { shotId?: string; idea?: string; style?: string; force?: boolean }
 ): Promise<void> {
   const { shotId, idea, style, force = false } = options || {};
-  console.log(`[Task] Starting execution: ${taskId} - ${action}, force: ${force}`);
+  console.log(`[Task] Execute request:`, {
+    taskId,
+    action,
+    projectId,
+    options: {
+      shotId: shotId || null,
+      idea: idea ? `${idea.slice(0, 100)}...` : null,
+      ideaLength: idea?.length || 0,
+      style: style || "default",
+      force,
+    },
+  });
 
   try {
     await updateTaskStatus(taskId, "running", 0);
@@ -42,8 +55,14 @@ export async function executeTask(
     switch (action) {
       case "script_generate": {
         const payload = { idea, style } as { idea?: string; style?: string };
-        await updateTaskStatus(taskId, "running", 10, "正在根据想法生成剧本...");
-        const result = await generateScript(projectId, payload.idea!, payload.style);
+
+        // 阶段1: 生成中文文本
+        await updateTaskStatus(taskId, "running", 10, "正在生成剧本文本...");
+        const textResult = await generateScriptText(projectId, payload.idea!, payload.style);
+        await updateTaskStatus(taskId, "running", 50, "正在解析剧本结构...", undefined, 2, undefined);
+
+        // 阶段2: 解析为JSON
+        const parseResult = await parseScriptText(projectId, 1);
 
         const updatedProject = await db.query.projects.findFirst({
           where: eq(projects.id, projectId),
@@ -55,13 +74,15 @@ export async function executeTask(
           where: eq(shots.projectId, projectId),
         });
 
-        await updateTaskStatus(taskId, "completed", 100, "剧本生成完成", undefined, undefined, {
-          title: result.title,
-          characterCount: result.characters?.length || 0,
-          sceneCount: result.scenes?.length || 0,
+        await updateTaskStatus(taskId, "completed", 100, "剧本生成完成", 2, 1, {
+          title: parseResult.title,
+          episodeCount: textResult.episodeCount,
+          characterCount: parseResult.characters?.length || 0,
+          sceneCount: parseResult.scenes?.length || 0,
           characters: chars,
           shots: newShots,
           project: updatedProject,
+          scriptText: textResult.text,
         });
         break;
       }
@@ -173,7 +194,7 @@ export async function executeTask(
             i
           );
 
-          await generateVideos(projectId, shot.id);
+          await generateVideos(projectId, shot.id, { force });
         }
 
         await updateTaskStatus(taskId, "completed", 100, "所有视频生成完成");

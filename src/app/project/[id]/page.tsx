@@ -31,8 +31,48 @@ import {
   Save,
   X,
   StopCircle,
+  Upload,
+  Settings,
+  Wand2,
+  Box,
+  UploadCloud,
+  Layers,
 } from "lucide-react";
 import { getFileUrl } from "@/lib/utils";
+import { TaskManager } from "@/components/TaskManager";
+import { DEFAULT_CHARACTER_DESCRIPTION_TEMPLATE } from "@/lib/prompts/templates/character-description";
+
+// 默认角色描述模板内容
+const DEFAULT_CHARACTER_TEMPLATE = `You are a professional character designer and visual artist specializing in AI image generation.
+
+TASK: Extract characters from the provided script and generate precise, professional visual descriptions optimized for AI image generation.
+
+OUTPUT FORMAT (Strict JSON - no markdown, no additional text):
+{
+  "characters": [
+    {
+      "name": "Character Name",
+      "scope": "main",
+      "description": "A detailed visual description in English, focusing on: 1) Art style and genre, 2) Age and physical features (face, body type, height), 3) Hair (style, color, length), 4) Clothing and accessories, 5) Color palette and key visual elements, 6) Any distinctive marks or features",
+      "visualHint": "A short 3-5 word search hint for quick image reference"
+    }
+  ]
+}
+
+DESCRIPTION RULES:
+- Write in English for best AI image generation results
+- Keep descriptions between 100-200 words
+- Focus on visual, reproducible details (no abstract personality traits)
+- Include specific color codes when important (e.g., #FF4500 for orange-red)
+- Specify clothing details, accessories, and distinctive features
+- Avoid metaphors or abstract concepts
+- Example GOOD: "Young female warrior, 20s, slender athletic build. Long flowing silver hair tied in a high ponytail. Wearing dark navy armor with gold trim, shoulder plates with clan emblem. Carrying a curved katana at her hip. Left eye has a distinct red scar."
+- Example BAD: "A heroic protagonist who gained mysterious powers through scientific experiments, blending science and cultivation."
+
+IMPORTANT:
+- "description" MUST be a plain text string, NOT an object
+- Return ONLY the JSON object, no explanations or markdown formatting
+- Each character description should be self-contained and complete`;
 
 interface Character {
   id: string;
@@ -72,11 +112,100 @@ interface Project {
   id: string;
   title: string;
   script: string;
+  scriptText?: string;
+  totalEpisodes?: number;
   style: string;
   aspectRatio: string;
   status: string;
   finalVideoUrl: string | null;
+  videoWorkflow: string | null;
 }
+
+interface WorkflowInfo {
+  hasWorkflow: boolean;
+  nodeCount: number;
+  classTypes: string[];
+  templateName?: string;
+}
+
+// 动态模板接口（从 ComfyUI 服务器获取）
+interface DynamicTemplate {
+  id: string;
+  name: string;
+  description: string;
+  file: string;
+  category?: string;
+}
+
+// 工作流模板定义
+interface WorkflowTemplate {
+  id: string;
+  name: string;
+  description: string;
+  icon: React.ElementType;
+  workflow: Record<string, unknown>;
+  category?: string;
+}
+
+// 预设工作流模板
+const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
+  {
+    id: "wan22_i2v",
+    name: "Wan2.2 图生视频",
+    description: "基于 Wan2.2 模型的图生视频，支持首帧输入",
+    icon: Wand2,
+    workflow: {
+      // 这里存储模板工作流 JSON
+      _template: true,
+      _name: "Wan2.2 Image to Video",
+      _description: "基于 Wan2.2 I2V 模型，支持 {{duration}}s 视频生成"
+    }
+  },
+  {
+    id: "ltx_video",
+    name: "LTX Video",
+    description: "使用 LTX Video 模型生成视频",
+    icon: Film,
+    workflow: {
+      _template: true,
+      _name: "LTX Video",
+      _description: "LTX Video 模型"
+    }
+  },
+  {
+    id: "f五一生",
+    name: "F.1 AI",
+    description: "F.1 AI 视频生成模型",
+    icon: Box,
+    workflow: {
+      _template: true,
+      _name: "F.1 AI Video",
+      _description: "F.1 AI 视频生成"
+    }
+  },
+  {
+    id: "cogvidex",
+    name: "CogVideoX",
+    description: "智谱 CogVideoX 视频生成",
+    icon: Sparkles,
+    workflow: {
+      _template: true,
+      _name: "CogVideoX",
+      _description: "CogVideoX 视频生成模型"
+    }
+  },
+  {
+    id: "custom",
+    name: "自定义上传",
+    description: "从本地 JSON 文件导入工作流",
+    icon: Upload,
+    workflow: {
+      _template: true,
+      _name: "Custom Workflow",
+      _description: "用户自定义工作流"
+    }
+  }
+];
 
 interface TaskProgress {
   taskId: string;
@@ -111,6 +240,7 @@ export default function ProjectPage() {
   const [activeTab, setActiveTab] = useState("overview");
   const [taskProgress, setTaskProgress] = useState<TaskProgress | null>(null);
   const [pollingActive, setPollingActive] = useState(false);
+  const [scriptPreview, setScriptPreview] = useState("");
 
   // 编辑状态
   const [editingShot, setEditingShot] = useState<Shot | null>(null);
@@ -122,44 +252,228 @@ export default function ProjectPage() {
   const [ideaText, setIdeaText] = useState("");
   const [selectedStyle, setSelectedStyle] = useState("anime");
 
+  // 工作流设置
+  const [showWorkflowSettings, setShowWorkflowSettings] = useState(false);
+  const [workflowInfo, setWorkflowInfo] = useState<WorkflowInfo | null>(null);
+  const [uploadingWorkflow, setUploadingWorkflow] = useState(false);
+  const [dynamicTemplates, setDynamicTemplates] = useState<DynamicTemplate[]>([]);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
+  const [templateCategory, setTemplateCategory] = useState<"image" | "video" | "all">("all");
+  const [showImageWorkflow, setShowImageWorkflow] = useState(false);
+
+  // 分集相关状态
+  const [activeEpisode, setActiveEpisode] = useState(1);
+  const [uploadingCharImage, setUploadingCharImage] = useState<string | null>(null);
+
+  // 角色描述模板管理
+  const [charTemplates, setCharTemplates] = useState<any[]>([]);
+  const [showTemplateSettings, setShowTemplateSettings] = useState(false);
+  const [editingTemplate, setEditingTemplate] = useState<any>(null);
+  const [templateLoading, setTemplateLoading] = useState(false);
+
+  // 加载角色描述模板
+  const fetchCharTemplates = async () => {
+    setTemplateLoading(true);
+    try {
+      const res = await fetch(`/api/templates/character-description`);
+      const data = await res.json();
+      if (data.templates) {
+        setCharTemplates(data.templates);
+      }
+    } catch (error) {
+      console.error("Failed to fetch templates:", error);
+    } finally {
+      setTemplateLoading(false);
+    }
+  };
+
+  // 创建新模板（复制默认模板）
+  const handleCreateTemplate = async () => {
+    const name = prompt("请输入新模板名称：");
+    if (!name) return;
+
+    try {
+      const res = await fetch(`/api/templates/character-description`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          description: "基于默认模板创建",
+          systemPrompt: DEFAULT_CHARACTER_TEMPLATE,
+          projectId,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        await fetchCharTemplates();
+        alert("模板创建成功！请编辑模板内容。");
+        setEditingTemplate(data.template);
+      } else {
+        alert(`创建失败: ${data.error}`);
+      }
+    } catch (error) {
+      console.error("Failed to create template:", error);
+    }
+  };
+
+  // 保存模板
+  const handleSaveTemplate = async () => {
+    if (!editingTemplate) return;
+
+    try {
+      const res = await fetch(`/api/templates/character-description`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(editingTemplate),
+      });
+      const data = await res.json();
+      if (data.success) {
+        await fetchCharTemplates();
+        setEditingTemplate(null);
+        alert("模板保存成功！");
+      } else {
+        alert(`保存失败: ${data.error}`);
+      }
+    } catch (error) {
+      console.error("Failed to save template:", error);
+    }
+  };
+
+  // 删除模板
+  const handleDeleteTemplate = async (id: string) => {
+    if (!confirm("确定要删除这个模板吗？")) return;
+
+    try {
+      const res = await fetch(`/api/templates/character-description?id=${id}`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
+      if (data.success) {
+        await fetchCharTemplates();
+        alert("模板已删除");
+      } else {
+        alert(`删除失败: ${data.error}`);
+      }
+    } catch (error) {
+      console.error("Failed to delete template:", error);
+    }
+  };
+
+  // 图像工作流参数状态
+  const [imageWorkflowParams, setImageWorkflowParams] = useState({
+    width: 1024,
+    height: 1024,
+    steps: 8,
+    workflowFile: "image_z_image_turbo.json",
+  });
+  const [availableWorkflows, setAvailableWorkflows] = useState<any[]>([]);
+  const [workflowParamsLoading, setWorkflowParamsLoading] = useState(false);
+
+  // 加载可用的工作流模板列表
+  const fetchAvailableWorkflows = async () => {
+    setWorkflowParamsLoading(true);
+    try {
+      const res = await fetch(`/api/templates/comfyui-workflow?category=image`);
+      const data = await res.json();
+      if (data.templates) {
+        setAvailableWorkflows(data.templates);
+        // 如果还没有选择工作流，设置默认值
+        if (!imageWorkflowParams.workflowFile && data.templates.length > 0) {
+          setImageWorkflowParams(prev => ({
+            ...prev,
+            workflowFile: data.templates[0].file,
+          }));
+        }
+      }
+    } catch (error) {
+      console.error("Failed to fetch workflows:", error);
+    } finally {
+      setWorkflowParamsLoading(false);
+    }
+  };
+
+  // 选择工作流时更新参数
+  const handleWorkflowSelect = async (workflowId: string) => {
+    setImageWorkflowParams(prev => ({ ...prev, workflowFile: workflowId }));
+
+    // 获取该工作流的默认参数
+    try {
+      const res = await fetch(`/api/templates/comfyui-workflow?id=${workflowId}`);
+      const data = await res.json();
+      if (data.template?.params) {
+        const params = data.template.params;
+        setImageWorkflowParams(prev => ({
+          ...prev,
+          workflowFile: workflowId,
+          width: params.width?.default || 1024,
+          height: params.height?.default || 1024,
+          steps: params.steps?.default || 8,
+        }));
+      }
+    } catch (error) {
+      console.error("Failed to fetch workflow params:", error);
+    }
+  };
+
+  // 保存工作流参数到项目
+  const handleSaveWorkflowParams = async () => {
+    try {
+      const res = await fetch(`/api/projects/${projectId}/workflow`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageWorkflowParams,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert("工作流参数已保存");
+      } else {
+        alert(`保存失败: ${data.error}`);
+      }
+    } catch (error) {
+      console.error("Failed to save workflow params:", error);
+    }
+  };
+
   useEffect(() => {
     fetchProject();
+    fetchWorkflowInfo();
+    fetchAvailableWorkflows();
   }, [projectId]);
 
   // 轮询任务进度
   useEffect(() => {
-    if (!pollingActive) return;
+    let pollInterval: NodeJS.Timeout | null = null;
 
-    const pollInterval = setInterval(async () => {
-      if (taskProgress?.taskId) {
-        try {
-          const res = await fetch(`/api/projects/${projectId}/tasks?taskId=${taskProgress.taskId}`, {
-            cache: "no-store"
-          });
-          const data = await res.json();
-          if (data.task) {
-            const newStatus = data.task.status;
-            setTaskProgress(data.task);
-            
-            // 如果是图片生成任务，持续刷新数据以显示生成进度
-            const isImageGeneration = ["frame_generate", "character_image"].includes(data.task.type);
-            
-            // 任务完成时停止轮询并刷新
-            if (newStatus === "completed" || newStatus === "failed") {
-              setPollingActive(false);
-              setGenerating(null);
-              if (newStatus === "completed") {
-                // 直接调用 fetch 刷新数据
-                await fetch(`/api/projects/${projectId}`, { cache: "no-store" })
-                  .then(r => r.json())
-                  .then(d => {
-                    setProject(d.project);
-                    setCharacters(d.characters || []);
-                    setShots(d.shots || []);
-                  });
-              }
-            } else if (isImageGeneration) {
-              // 图片生成任务进行中，每隔一段时间刷新一次数据
+    const pollTaskStatus = async () => {
+      if (!taskProgress?.taskId) return;
+
+      try {
+        const res = await fetch(`/api/projects/${projectId}/tasks?taskId=${taskProgress.taskId}`, {
+          cache: "no-store"
+        });
+        
+        if (!res.ok) {
+          console.error("Failed to poll task status:", res.status);
+          return;
+        }
+
+        const data = await res.json();
+        if (data.task) {
+          const newStatus = data.task.status;
+          setTaskProgress(data.task);
+
+          // 如果是剧本生成任务，获取流式预览
+          const isScriptGeneration = data.task.type === "script_parse" &&
+            (data.task.currentStep?.includes("剧本文本") || data.task.currentStep?.includes("解析"));
+
+          // 任务完成时停止轮询并刷新
+          if (newStatus === "completed" || newStatus === "failed") {
+            setPollingActive(false);
+            setGenerating(null);
+            setScriptPreview(""); // 清除预览
+            if (newStatus === "completed") {
               // 直接调用 fetch 刷新数据
               await fetch(`/api/projects/${projectId}`, { cache: "no-store" })
                 .then(r => r.json())
@@ -169,15 +483,55 @@ export default function ProjectPage() {
                   setShots(d.shots || []);
                 });
             }
+          } else if (isScriptGeneration || data.task.type === "script_parse") {
+            // 剧本生成任务进行中，获取预览文本
+            await fetch(`/api/projects/${projectId}`, { cache: "no-store" })
+              .then(r => r.json())
+              .then(d => {
+                if (d.project?.scriptText) {
+                  setScriptPreview(d.project.scriptText);
+                }
+              });
+          } else {
+            // 其他图片生成任务，持续刷新数据以显示生成进度
+            const isImageGeneration = ["frame_generate", "character_image"].includes(data.task.type);
+            if (isImageGeneration) {
+              await fetch(`/api/projects/${projectId}`, { cache: "no-store" })
+                .then(r => r.json())
+                .then(d => {
+                  setProject(d.project);
+                  setCharacters(d.characters || []);
+                  setShots(d.shots || []);
+                });
+            }
           }
-        } catch (error) {
-          console.error("Failed to poll task status:", error);
         }
+      } catch (error) {
+        console.error("Failed to poll task status:", error);
       }
-    }, 2000);
+    };
 
-    return () => clearInterval(pollInterval);
-  }, [pollingActive, taskProgress?.taskId, projectId]);
+    if (pollingActive && taskProgress?.taskId) {
+      // 立即执行一次
+      pollTaskStatus();
+      // 然后每2秒轮询
+      pollInterval = setInterval(pollTaskStatus, 2000);
+    }
+
+    return () => {
+      if (pollInterval) {
+        clearInterval(pollInterval);
+      }
+    };
+  }, [pollingActive, taskProgress?.taskId, projectId, taskProgress?.type]);
+
+  // 页面卸载时停止轮询
+  useEffect(() => {
+    return () => {
+      setPollingActive(false);
+      setGenerating(null);
+    };
+  }, []);
 
   const fetchProject = async () => {
     try {
@@ -197,6 +551,249 @@ export default function ProjectPage() {
       console.error("Failed to fetch project:", error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchWorkflowInfo = async () => {
+    try {
+      const res = await fetch(`/api/projects/${projectId}/workflow`);
+      const data = await res.json();
+      if (data.hasWorkflow) {
+        setWorkflowInfo({
+          hasWorkflow: true,
+          nodeCount: Object.keys(data.workflow || {}).length,
+          classTypes: data.classTypes || [],
+          templateName: data.templateName || "custom",
+        });
+      } else {
+        setWorkflowInfo(null);
+      }
+    } catch (error) {
+      console.error("Failed to fetch workflow:", error);
+    }
+  };
+
+  // 从 ComfyUI 服务器获取动态模板列表
+  const fetchDynamicTemplates = async (category: "image" | "video" | "all" = "all") => {
+    setTemplatesLoading(true);
+    try {
+      const res = await fetch(`/api/comfyui/templates?type=${category}`);
+      const data = await res.json();
+      if (data.templates) {
+        setDynamicTemplates(data.templates);
+      }
+    } catch (error) {
+      console.error("Failed to fetch templates:", error);
+      // 如果 API 失败，使用默认模板
+      setDynamicTemplates([]);
+    } finally {
+      setTemplatesLoading(false);
+    }
+  };
+
+  const handleTemplateSelect = async (templateId: string) => {
+    if (templateId === "custom") {
+      // 自定义模板需要上传文件
+      return;
+    }
+
+    // 优先从动态模板中查找
+    const dynamicTemplate = dynamicTemplates.find(t => t.id === templateId);
+    if (dynamicTemplate) {
+      // 动态模板：从 ComfyUI 服务器获取工作流
+      try {
+        const baseUrl = process.env.NEXT_PUBLIC_COMFYUI_API_URL || process.env.COMFYUI_API_URL;
+        const workflowRes = await fetch(`${baseUrl}/templates/${dynamicTemplate.file}`);
+        if (!workflowRes.ok) {
+          throw new Error("Failed to fetch template workflow");
+        }
+        const workflowData = await workflowRes.json();
+        
+        // 添加模板元信息
+        const workflowWithMeta = {
+          ...workflowData,
+          _templateId: templateId,
+          _templateName: dynamicTemplate.name,
+          _description: dynamicTemplate.description,
+          _category: dynamicTemplate.category,
+        };
+
+        const res = await fetch(`/api/projects/${projectId}/workflow`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ 
+            workflow: workflowWithMeta,
+            templateName: templateId 
+          }),
+        });
+
+        const data = await res.json();
+        if (data.success) {
+          setWorkflowInfo({
+            hasWorkflow: true,
+            nodeCount: Object.keys(workflowData).length,
+            classTypes: extractClassTypes(workflowData),
+            templateName: templateId,
+          });
+        } else {
+          alert(`设置模板失败: ${data.error}`);
+        }
+      } catch (error) {
+        console.error("Failed to set template:", error);
+        // 如果获取工作流失败，保存模板引用
+        await saveTemplateReference(templateId, dynamicTemplate);
+      }
+      return;
+    }
+
+    // 预设模板：从本地模板获取工作流
+    const template = WORKFLOW_TEMPLATES.find(t => t.id === templateId);
+    if (!template) return;
+
+    try {
+      const workflowData = {
+        _templateId: templateId,
+        _templateName: template.name,
+        _description: template.description,
+        _category: template.category,
+      };
+
+      const res = await fetch(`/api/projects/${projectId}/workflow`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          workflow: workflowData,
+          templateName: templateId 
+        }),
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        setWorkflowInfo({
+          hasWorkflow: true,
+          nodeCount: 0,
+          classTypes: [template.name],
+          templateName: templateId,
+        });
+      } else {
+        alert(`设置模板失败: ${data.error}`);
+      }
+    } catch (error) {
+      console.error("Failed to set template:", error);
+      alert("设置模板失败，请重试");
+    }
+  };
+
+  // 保存模板引用（当无法获取完整工作流时）
+  const saveTemplateReference = async (templateId: string, template: DynamicTemplate) => {
+    try {
+      const workflowData = {
+        _templateId: templateId,
+        _templateName: template.name,
+        _description: template.description,
+        _category: template.category,
+        _file: template.file,
+      };
+
+      const res = await fetch(`/api/projects/${projectId}/workflow`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          workflow: workflowData,
+          templateName: templateId 
+        }),
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        setWorkflowInfo({
+          hasWorkflow: true,
+          nodeCount: 0,
+          classTypes: [template.name],
+          templateName: templateId,
+        });
+        alert(`${template.name} 模板已设置`);
+      }
+    } catch (error) {
+      console.error("Failed to save template reference:", error);
+    }
+  };
+
+  // 从工作流中提取节点类型
+  const extractClassTypes = (workflow: Record<string, unknown>): string[] => {
+    const types = new Set<string>();
+    for (const node of Object.values(workflow)) {
+      if (typeof node === "object" && node !== null) {
+        const n = node as Record<string, unknown>;
+        if (n.class_type) {
+          types.add(n.class_type as string);
+        }
+      }
+    }
+    return Array.from(types);
+  };
+
+  const handleWorkflowUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (!file.name.endsWith(".json")) {
+      alert("只支持 JSON 格式文件");
+      return;
+    }
+
+    setUploadingWorkflow(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const res = await fetch(`/api/projects/${projectId}/workflow/upload`, {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        setWorkflowInfo({
+          hasWorkflow: true,
+          nodeCount: data.nodeCount,
+          classTypes: data.classTypes || [],
+          templateName: "custom",
+        });
+        alert(`工作流上传成功！包含 ${data.nodeCount} 个节点`);
+      } else {
+        alert(`上传失败: ${data.error}`);
+      }
+    } catch (error) {
+      console.error("Failed to upload workflow:", error);
+      alert("上传失败，请重试");
+    } finally {
+      setUploadingWorkflow(false);
+      // 清空文件输入
+      event.target.value = "";
+    }
+  };
+
+  const handleWorkflowClear = async () => {
+    if (!confirm("确定要清除工作流配置吗？")) return;
+
+    try {
+      const res = await fetch(`/api/projects/${projectId}/workflow`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workflow: null, templateName: null }),
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        setWorkflowInfo(null);
+        alert("工作流已清除");
+      } else {
+        alert(`清除失败: ${data.error}`);
+      }
+    } catch (error) {
+      console.error("Failed to clear workflow:", error);
+      alert("清除失败，请重试");
     }
   };
 
@@ -325,6 +922,93 @@ export default function ProjectPage() {
     setCharacters(characters.filter(c => c.id !== charId));
   };
 
+  // 上传角色图
+  const handleCharImageUpload = async (charId: string, event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setUploadingCharImage(charId);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const res = await fetch(`/api/projects/${projectId}/characters/${charId}/upload-image`, {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        // 更新本地状态
+        setCharacters(characters.map(c => 
+          c.id === charId ? { ...c, referenceImage: data.path } : c
+        ));
+      } else {
+        alert(`上传失败: ${data.error}`);
+      }
+    } catch (error) {
+      console.error("Failed to upload character image:", error);
+      alert("上传失败，请重试");
+    } finally {
+      setUploadingCharImage(null);
+      event.target.value = "";
+    }
+  };
+
+  // 生成单集剧本
+  const handleGenerateEpisode = async (episode: number) => {
+    if (!ideaText.trim()) {
+      alert("请先输入创作想法");
+      return;
+    }
+
+    setGenerating("script_generate");
+    try {
+      const res = await fetch(`/api/projects/${projectId}/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          action: "script_generate", 
+          idea: ideaText, 
+          style: selectedStyle,
+          episode 
+        }),
+      });
+      const result = await res.json();
+
+      if (!result.success) {
+        alert(`创建任务失败: ${result.error}`);
+        setGenerating(null);
+        return;
+      }
+
+      await fetch("/api/tasks/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          taskId: result.taskId,
+          projectId,
+          action: "script_generate",
+          idea: ideaText,
+          style: selectedStyle,
+          episode,
+        }),
+      });
+
+      setTaskProgress({
+        taskId: result.taskId,
+        type: "script_generate",
+        status: "running",
+        progress: 0,
+      });
+      setPollingActive(true);
+    } catch (error) {
+      console.error("Generation failed:", error);
+      alert("生成失败，请重试");
+      setGenerating(null);
+    }
+  };
+
   const handleShotDelete = async (shotId: string) => {
     if (!confirm("确定要删除这个分镜吗？")) return;
     
@@ -396,18 +1080,20 @@ export default function ProjectPage() {
   const renderTaskProgress = () => {
     if (!taskProgress || !pollingActive) return null;
 
+    const isScriptTask = taskProgress.type === "script_parse" || generating === "script_generate";
+
     return (
       <Card className="mb-4 border-blue-200 bg-blue-50">
         <CardContent className="pt-4">
-          <div className="flex items-center gap-4">
-            <Loader2 className="w-5 h-5 animate-spin text-blue-500" />
+          <div className="flex items-center gap-4 mb-3">
+            <Loader2 className="w-5 h-5 animate-spin text-blue-500 shrink-0" />
             <div className="flex-1">
               <p className="font-medium text-blue-700">
                 {taskProgress.currentStep || "处理中..."}
               </p>
               <div className="flex items-center gap-2 mt-1">
                 <div className="flex-1 h-2 bg-blue-200 rounded-full overflow-hidden">
-                  <div 
+                  <div
                     className="h-full bg-blue-500 transition-all duration-300"
                     style={{ width: `${taskProgress.progress}%` }}
                   />
@@ -420,16 +1106,26 @@ export default function ProjectPage() {
                 </p>
               )}
             </div>
-            <Button 
-              variant="outline" 
-              size="sm" 
+            <Button
+              variant="outline"
+              size="sm"
               onClick={cancelTask}
-              className="text-red-500 border-red-200 hover:bg-red-50"
+              className="text-red-500 border-red-200 hover:bg-red-50 shrink-0"
             >
               <StopCircle className="w-4 h-4 mr-1" />
               取消
             </Button>
           </div>
+
+          {/* 剧本预览（仅剧本生成任务显示） */}
+          {isScriptTask && scriptPreview && (
+            <div className="bg-white rounded-lg p-3 border border-blue-100 max-h-48 overflow-auto">
+              <p className="text-xs text-gray-500 mb-2">剧本预览（生成中...）</p>
+              <pre className="text-xs text-gray-700 whitespace-pre-wrap font-sans">
+                {scriptPreview.slice(-2000)}
+              </pre>
+            </div>
+          )}
         </CardContent>
       </Card>
     );
@@ -477,6 +1173,7 @@ export default function ProjectPage() {
             {project.status === "completed" ? "已完成" :
              project.status === "processing" ? "处理中" : "草稿"}
           </Badge>
+          <TaskManager projectId={projectId} />
         </div>
       </header>
 
@@ -587,6 +1284,448 @@ export default function ProjectPage() {
                     一键生成全部
                   </Button>
                 </div>
+
+                {/* Workflow Settings */}
+                <Card className="mt-4">
+                  <CardHeader>
+                    <button
+                      className="flex items-center gap-2 w-full text-left"
+                      onClick={() => {
+                        setShowWorkflowSettings(!showWorkflowSettings);
+                        if (!showWorkflowSettings && dynamicTemplates.length === 0) {
+                          fetchDynamicTemplates(templateCategory);
+                        }
+                      }}
+                    >
+                      <Settings className="w-4 h-4" />
+                      <CardTitle className="text-base">工作流设置</CardTitle>
+                      {workflowInfo?.hasWorkflow && (
+                        <Badge variant="outline" className="ml-auto bg-green-50 text-green-600 border-green-200">
+                          已配置
+                        </Badge>
+                      )}
+                    </button>
+                  </CardHeader>
+                  {showWorkflowSettings && (
+                    <CardContent className="space-y-4">
+                      {/* 模板类别切换 */}
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <label className="text-sm font-medium">选择模板类型</label>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => {
+                              fetchDynamicTemplates(templateCategory);
+                            }}
+                            disabled={templatesLoading}
+                          >
+                            <Sparkles className="w-4 h-4 mr-1" />
+                            {templatesLoading ? "加载中..." : "刷新模板"}
+                          </Button>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            variant={templateCategory === "all" ? "default" : "outline"}
+                            onClick={() => {
+                              setTemplateCategory("all");
+                              fetchDynamicTemplates("all");
+                            }}
+                          >
+                            全部
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant={templateCategory === "image" ? "default" : "outline"}
+                            onClick={() => {
+                              setTemplateCategory("image");
+                              fetchDynamicTemplates("image");
+                              setShowImageWorkflow(true);
+                              // 如果还没有加载工作流列表，获取一次
+                              if (availableWorkflows.length === 0) {
+                                fetchAvailableWorkflows();
+                              }
+                            }}
+                          >
+                            <Image className="w-4 h-4 mr-1" />
+                            图片生成
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant={templateCategory === "video" ? "default" : "outline"}
+                            onClick={() => {
+                              setTemplateCategory("video");
+                              fetchDynamicTemplates("video");
+                              setShowImageWorkflow(false);
+                            }}
+                          >
+                            <Film className="w-4 h-4 mr-1" />
+                            视频生成
+                          </Button>
+                        </div>
+                      </div>
+
+                      {/* 图片生成工作流设置 */}
+                      {showImageWorkflow && (
+                        <div className="border-t pt-4">
+                          <label className="text-sm font-medium mb-2 block">图片生成工作流</label>
+                          <div className="text-xs text-gray-500 mb-2">
+                            设置 ComfyUI 图片生成使用的工作流模板
+                          </div>
+
+                          {/* 工作流模板选择 */}
+                          {workflowParamsLoading ? (
+                            <div className="flex items-center justify-center py-4">
+                              <Loader2 className="w-5 h-5 animate-spin text-gray-400 mr-2" />
+                              <span className="text-sm text-gray-500">加载工作流中...</span>
+                            </div>
+                          ) : availableWorkflows.length === 0 ? (
+                            <div className="text-center py-4 text-sm text-gray-500">
+                              <p>暂无可用工作流</p>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={fetchAvailableWorkflows}
+                                className="mt-2"
+                              >
+                                刷新重试
+                              </Button>
+                            </div>
+                          ) : (
+                            <div className="mb-3">
+                              <select
+                                value={imageWorkflowParams.workflowFile}
+                                onChange={(e) => handleWorkflowSelect(e.target.value)}
+                                disabled={generating !== null}
+                                className="w-full px-3 py-2 border rounded-lg text-sm bg-white"
+                              >
+                                {availableWorkflows.map((wf) => (
+                                  <option key={wf.id} value={wf.file}>
+                                    {wf.name} ({wf.description || wf.category})
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          )}
+
+                          {/* 图像参数设置 */}
+                          <div className="bg-gray-50 rounded-lg p-3 mb-3">
+                            <div className="text-xs font-medium text-gray-600 mb-2">生成参数</div>
+                            <div className="grid grid-cols-3 gap-3">
+                              <div>
+                                <label className="text-xs text-gray-500 block mb-1">宽度</label>
+                                <select
+                                  value={imageWorkflowParams.width}
+                                  onChange={(e) => setImageWorkflowParams(prev => ({ ...prev, width: Number(e.target.value) }))}
+                                  disabled={generating !== null}
+                                  className="w-full px-2 py-1 border rounded text-sm"
+                                >
+                                  <option value={512}>512</option>
+                                  <option value={768}>768</option>
+                                  <option value={1024}>1024</option>
+                                  <option value={1536}>1536</option>
+                                </select>
+                              </div>
+                              <div>
+                                <label className="text-xs text-gray-500 block mb-1">高度</label>
+                                <select
+                                  value={imageWorkflowParams.height}
+                                  onChange={(e) => setImageWorkflowParams(prev => ({ ...prev, height: Number(e.target.value) }))}
+                                  disabled={generating !== null}
+                                  className="w-full px-2 py-1 border rounded text-sm"
+                                >
+                                  <option value={512}>512</option>
+                                  <option value={768}>768</option>
+                                  <option value={1024}>1024</option>
+                                  <option value={1536}>1536</option>
+                                </select>
+                              </div>
+                              <div>
+                                <label className="text-xs text-gray-500 block mb-1">步数</label>
+                                <select
+                                  value={imageWorkflowParams.steps}
+                                  onChange={(e) => setImageWorkflowParams(prev => ({ ...prev, steps: Number(e.target.value) }))}
+                                  disabled={generating !== null}
+                                  className="w-full px-2 py-1 border rounded text-sm"
+                                >
+                                  <option value={4}>4</option>
+                                  <option value={8}>8</option>
+                                  <option value={16}>16</option>
+                                  <option value={24}>24</option>
+                                  <option value={32}>32</option>
+                                </select>
+                              </div>
+                            </div>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="w-full mt-2"
+                              onClick={handleSaveWorkflowParams}
+                              disabled={generating !== null}
+                            >
+                              <Save className="w-3 h-3 mr-1" />
+                              保存参数
+                            </Button>
+                          </div>
+
+                          {/* 动态模板列表 */}
+                          {templatesLoading ? (
+                            <div className="flex items-center justify-center py-8">
+                              <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
+                              <span className="ml-2 text-sm text-gray-500">加载模板中...</span>
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-1 gap-2 max-h-60 overflow-y-auto">
+                              {dynamicTemplates.filter(t => t.category === "image" || t.category === undefined).map((template) => {
+                                const isSelected = workflowInfo?.templateName === template.id;
+                                const isDisabled = generating !== null;
+                                
+                                return (
+                                  <div
+                                    key={template.id}
+                                    className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer transition-all ${
+                                      isDisabled
+                                        ? "opacity-50 cursor-not-allowed"
+                                        : isSelected
+                                          ? "border-blue-500 bg-blue-50"
+                                          : "border-gray-200 hover:border-gray-300 hover:bg-gray-50"
+                                    }`}
+                                    onClick={() => !isDisabled && handleTemplateSelect(template.id)}
+                                  >
+                                    <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
+                                      isSelected ? "bg-blue-500 text-white" : "bg-gray-100"
+                                    }`}>
+                                      <Image className="w-5 h-5" />
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <p className="font-medium text-sm">{template.name}</p>
+                                      <p className="text-xs text-gray-500 truncate">{template.description}</p>
+                                    </div>
+                                    {isSelected && (
+                                      <CheckCircle className="w-5 h-5 text-blue-500 flex-shrink-0" />
+                                    )}
+                                  </div>
+                                );
+                              })}
+                              {/* 自定义上传选项 */}
+                              <div
+                                className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer transition-all ${
+                                  generating !== null
+                                    ? "opacity-50 cursor-not-allowed"
+                                    : workflowInfo?.templateName === "custom_image"
+                                      ? "border-blue-500 bg-blue-50"
+                                      : "border-gray-200 hover:border-gray-300 hover:bg-gray-50"
+                                }`}
+                                onClick={() => {
+                                  if (generating === null) {
+                                    setWorkflowInfo((prev) => prev ? {
+                                      ...prev,
+                                      templateName: "custom_image",
+                                    } : {
+                                      hasWorkflow: false,
+                                      nodeCount: 0,
+                                      classTypes: [],
+                                      templateName: "custom_image",
+                                    });
+                                  }
+                                }}
+                              >
+                                <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
+                                  workflowInfo?.templateName === "custom_image" ? "bg-blue-500 text-white" : "bg-gray-100"
+                                }`}>
+                                  <Upload className="w-5 h-5" />
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="font-medium text-sm">自定义上传</p>
+                                  <p className="text-xs text-gray-500">从本地 JSON 文件导入</p>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                          {workflowInfo?.templateName === "custom_image" && (
+                            <div className="mt-2">
+                              <label className="cursor-pointer">
+                                <input
+                                  type="file"
+                                  accept=".json"
+                                  onChange={handleWorkflowUpload}
+                                  disabled={uploadingWorkflow || generating !== null}
+                                  className="hidden"
+                                />
+                                <div
+                                  className={`flex items-center justify-center gap-2 w-full px-4 py-3 border-2 border-dashed rounded-lg transition-colors ${
+                                    uploadingWorkflow || generating !== null
+                                      ? "bg-gray-100 text-gray-400 cursor-not-allowed border-gray-300"
+                                      : "bg-white border-gray-300 hover:border-blue-400 hover:bg-blue-50"
+                                  }`}
+                                >
+                                  {uploadingWorkflow ? (
+                                    <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                                  ) : (
+                                    <Upload className="w-5 h-5 mr-2 text-gray-400" />
+                                  )}
+                                  <span className={uploadingWorkflow || generating !== null ? "text-gray-400" : "text-gray-600"}>
+                                    {uploadingWorkflow ? "上传中..." : "点击选择图片生成工作流 JSON"}
+                                  </span>
+                                </div>
+                              </label>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* 视频生成工作流设置 */}
+                      {!showImageWorkflow && (
+                        <div className="border-t pt-4">
+                          <label className="text-sm font-medium mb-2 block">视频生成工作流</label>
+                          <div className="text-xs text-gray-500 mb-2">
+                            设置 ComfyUI 视频生成使用的工作流模板
+                          </div>
+                          {/* 动态模板列表 */}
+                          {templatesLoading ? (
+                            <div className="flex items-center justify-center py-8">
+                              <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
+                              <span className="ml-2 text-sm text-gray-500">加载模板中...</span>
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-1 gap-2 max-h-60 overflow-y-auto">
+                              {dynamicTemplates.filter(t => t.category === "video" || t.category === undefined).map((template) => {
+                                const isSelected = workflowInfo?.templateName === template.id;
+                                const isDisabled = generating !== null;
+                                
+                                return (
+                                  <div
+                                    key={template.id}
+                                    className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer transition-all ${
+                                      isDisabled
+                                        ? "opacity-50 cursor-not-allowed"
+                                        : isSelected
+                                          ? "border-blue-500 bg-blue-50"
+                                          : "border-gray-200 hover:border-gray-300 hover:bg-gray-50"
+                                    }`}
+                                    onClick={() => !isDisabled && handleTemplateSelect(template.id)}
+                                  >
+                                    <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
+                                      isSelected ? "bg-blue-500 text-white" : "bg-gray-100"
+                                    }`}>
+                                      <Film className="w-5 h-5" />
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <p className="font-medium text-sm">{template.name}</p>
+                                      <p className="text-xs text-gray-500 truncate">{template.description}</p>
+                                    </div>
+                                    {isSelected && (
+                                      <CheckCircle className="w-5 h-5 text-blue-500 flex-shrink-0" />
+                                    )}
+                                  </div>
+                                );
+                              })}
+                              {/* 自定义上传选项 */}
+                              <div
+                                className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer transition-all ${
+                                  generating !== null
+                                    ? "opacity-50 cursor-not-allowed"
+                                    : workflowInfo?.templateName === "custom"
+                                      ? "border-blue-500 bg-blue-50"
+                                      : "border-gray-200 hover:border-gray-300 hover:bg-gray-50"
+                                }`}
+                                onClick={() => {
+                                  if (generating === null) {
+                                    setWorkflowInfo((prev) => prev ? {
+                                      ...prev,
+                                      templateName: "custom",
+                                    } : {
+                                      hasWorkflow: false,
+                                      nodeCount: 0,
+                                      classTypes: [],
+                                      templateName: "custom",
+                                    });
+                                  }
+                                }}
+                              >
+                                <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
+                                  workflowInfo?.templateName === "custom" ? "bg-blue-500 text-white" : "bg-gray-100"
+                                }`}>
+                                  <Upload className="w-5 h-5" />
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="font-medium text-sm">自定义上传</p>
+                                  <p className="text-xs text-gray-500">从本地 JSON 文件导入</p>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                          {workflowInfo?.templateName === "custom" && (
+                            <div className="mt-2">
+                              <label className="cursor-pointer">
+                                <input
+                                  type="file"
+                                  accept=".json"
+                                  onChange={handleWorkflowUpload}
+                                  disabled={uploadingWorkflow || generating !== null}
+                                  className="hidden"
+                                />
+                                <div
+                                  className={`flex items-center justify-center gap-2 w-full px-4 py-3 border-2 border-dashed rounded-lg transition-colors ${
+                                    uploadingWorkflow || generating !== null
+                                      ? "bg-gray-100 text-gray-400 cursor-not-allowed border-gray-300"
+                                      : "bg-white border-gray-300 hover:border-blue-400 hover:bg-blue-50"
+                                  }`}
+                                >
+                                  {uploadingWorkflow ? (
+                                    <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                                  ) : (
+                                    <Upload className="w-5 h-5 mr-2 text-gray-400" />
+                                  )}
+                                  <span className={uploadingWorkflow || generating !== null ? "text-gray-400" : "text-gray-600"}>
+                                    {uploadingWorkflow ? "上传中..." : "点击选择视频生成工作流 JSON"}
+                                  </span>
+                                </div>
+                              </label>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* 当前配置状态 */}
+                      {workflowInfo?.hasWorkflow && workflowInfo?.templateName !== "custom" && workflowInfo?.templateName !== "custom_image" && (
+                        <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+                          <div className="flex items-center gap-2 mb-2">
+                            <CheckCircle className="w-4 h-4 text-green-500" />
+                            <span className="font-medium text-sm text-green-700">
+                              {dynamicTemplates.find(t => t.id === workflowInfo?.templateName)?.name || 
+                               WORKFLOW_TEMPLATES.find(t => t.id === workflowInfo?.templateName)?.name || 
+                               "已选择"} 工作流
+                            </span>
+                          </div>
+                          {workflowInfo.classTypes.length > 0 && (
+                            <div className="flex flex-wrap gap-1">
+                              {workflowInfo.classTypes.slice(0, 5).map((type, i) => (
+                                <Badge key={i} variant="secondary" className="text-xs">
+                                  {type}
+                                </Badge>
+                              ))}
+                              {workflowInfo.classTypes.length > 5 && (
+                                <Badge variant="secondary" className="text-xs">
+                                  +{workflowInfo.classTypes.length - 5}
+                                </Badge>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* 占位符说明 */}
+                      <div className="bg-gray-50 rounded-lg p-3">
+                        <p className="text-xs font-medium text-gray-600 mb-1">支持的占位符：</p>
+                        <code className="text-xs text-gray-500">
+                          {"{{prompt}}"} {"{{negative_prompt}}"} {"{{first_frame}}"} {"{{last_frame}}"} {"{{width}}"} {"{{height}}"} {"{{duration}}"} {"{{frame_length}}"}
+                        </code>
+                      </div>
+                    </CardContent>
+                  )}
+                </Card>
               </CardContent>
             </Card>
 
@@ -615,28 +1754,62 @@ export default function ProjectPage() {
             <Tabs value={activeTab} onValueChange={setActiveTab}>
               <TabsList className="grid w-full grid-cols-3">
                 <TabsTrigger value="overview">概览</TabsTrigger>
-                <TabsTrigger value="characters">角色 ({characters.length})</TabsTrigger>
+                <TabsTrigger value="characters">
+                  角色 ({characters.length})
+                  {charTemplates.length > 0 && (
+                    <Badge variant="secondary" className="ml-1 text-xs">模板</Badge>
+                  )}
+                </TabsTrigger>
                 <TabsTrigger value="shots">分镜 ({shots.length})</TabsTrigger>
               </TabsList>
 
               <TabsContent value="overview" className="mt-4">
                 <Card>
                   <CardHeader className="flex flex-row items-center justify-between">
-                    <CardTitle>剧本</CardTitle>
-                    {!editingScript ? (
-                      <Button size="sm" variant="ghost" onClick={() => setEditingScript(true)}>
-                        <Edit2 className="w-4 h-4" />
+                    <div className="flex items-center gap-2">
+                      <CardTitle>剧本</CardTitle>
+                      {/* 分集选择器 */}
+                      {project && project.totalEpisodes && project.totalEpisodes > 1 && (
+                        <div className="flex items-center gap-1 ml-4">
+                          <Layers className="w-4 h-4 text-gray-400" />
+                          <select
+                            value={activeEpisode}
+                            onChange={(e) => setActiveEpisode(Number(e.target.value))}
+                            className="text-sm border rounded px-2 py-1 bg-white"
+                          >
+                            {Array.from({ length: project.totalEpisodes }, (_, i) => (
+                              <option key={i + 1} value={i + 1}>第 {i + 1} 集</option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {/* 生成单集按钮 */}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleGenerateEpisode(activeEpisode)}
+                        disabled={generating !== null || !ideaText.trim()}
+                      >
+                        <Sparkles className="w-4 h-4 mr-1" />
+                        生成第{activeEpisode}集
                       </Button>
-                    ) : (
-                      <div className="flex gap-2">
-                        <Button size="sm" variant="ghost" onClick={() => setEditingScript(false)}>
-                          <X className="w-4 h-4" />
+                      {!editingScript ? (
+                        <Button size="sm" variant="ghost" onClick={() => setEditingScript(true)}>
+                          <Edit2 className="w-4 h-4" />
                         </Button>
-                        <Button size="sm" onClick={() => handleScriptSave(project.script)}>
-                          <Save className="w-4 h-4" />
-                        </Button>
-                      </div>
-                    )}
+                      ) : (
+                        <div className="flex gap-2">
+                          <Button size="sm" variant="ghost" onClick={() => setEditingScript(false)}>
+                            <X className="w-4 h-4" />
+                          </Button>
+                          <Button size="sm" onClick={() => handleScriptSave(project.script)}>
+                            <Save className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      )}
+                    </div>
                   </CardHeader>
                   <CardContent>
                     {editingScript ? (
@@ -656,9 +1829,83 @@ export default function ProjectPage() {
                     )}
                   </CardContent>
                 </Card>
+
+                {/* 分集管理 */}
+                {project && project.totalEpisodes && project.totalEpisodes > 0 && (
+                  <Card className="mt-4">
+                    <CardHeader>
+                      <CardTitle className="text-base flex items-center gap-2">
+                        <Layers className="w-4 h-4" />
+                        分集管理
+                        <Badge variant="outline">{project.totalEpisodes} 集</Badge>
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="flex flex-wrap gap-2">
+                        {Array.from({ length: project.totalEpisodes }, (_, i) => {
+                          const ep = i + 1;
+                          return (
+                            <Button
+                              key={ep}
+                              size="sm"
+                              variant={activeEpisode === ep ? "default" : "outline"}
+                              onClick={() => setActiveEpisode(ep)}
+                            >
+                              第 {ep} 集
+                            </Button>
+                          );
+                        })}
+                        {/* 添加新集按钮 */}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            // TODO: 调用API添加新集
+                            alert("添加新集功能开发中");
+                          }}
+                        >
+                          <Plus className="w-4 h-4 mr-1" />
+                          添加新集
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
               </TabsContent>
 
               <TabsContent value="characters" className="mt-4">
+                {/* 角色描述模板设置入口 */}
+                <Card className="mb-4 bg-gradient-to-r from-purple-50 to-blue-50 border-purple-200">
+                  <CardContent className="pt-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center">
+                          <Sparkles className="w-5 h-5 text-purple-600" />
+                        </div>
+                        <div>
+                          <h3 className="font-medium text-sm">角色描述模板</h3>
+                          <p className="text-xs text-gray-500">
+                            {charTemplates.length > 0
+                              ? `已配置 ${charTemplates.length} 个模板`
+                              : "使用默认模板"}
+                          </p>
+                        </div>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setShowTemplateSettings(true);
+                          fetchCharTemplates();
+                        }}
+                      >
+                        <Settings className="w-4 h-4 mr-1" />
+                        管理模板
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {characters.map((char) => (
                     <Card key={char.id}>
@@ -692,38 +1939,88 @@ export default function ProjectPage() {
                       ) : (
                         <CardContent className="pt-4">
                           <div className="flex items-start gap-4">
-                            {char.referenceImage ? (
-                              <div className="relative">
-                                <img
-                                  src={getFileUrl(char.referenceImage) || ""}
-                                  alt={char.name}
-                                  className="w-24 h-24 object-cover rounded-lg"
-                                />
-                                <Button 
-                                  size="sm" 
-                                  variant="secondary"
-                                  className="absolute -bottom-2 -right-2 h-8 w-8 p-0 rounded-full shadow-md"
-                                  disabled={generating !== null}
-                                  onClick={() => startGenerateWithShot("character_image", char.id)}
-                                  title="重绘角色图"
-                                >
-                                  <Loader2 className="w-3 h-3 text-orange-500" />
-                                </Button>
-                              </div>
-                            ) : (
-                              <Button 
-                                size="sm" 
-                                variant="outline"
-                                className="w-24 h-24 rounded-lg border-dashed"
-                                disabled={generating !== null}
-                                onClick={() => startGenerateWithShot("character_image", char.id)}
-                              >
-                                <div className="flex flex-col items-center">
-                                  <Image className="w-6 h-6 mb-1" />
-                                  <span className="text-xs">生成</span>
+                            <div className="relative">
+                              {char.referenceImage ? (
+                                <>
+                                  <img
+                                    src={getFileUrl(char.referenceImage) || ""}
+                                    alt={char.name}
+                                    className="w-24 h-24 object-cover rounded-lg"
+                                  />
+                                  {/* 操作按钮组 */}
+                                  <div className="absolute -bottom-2 -right-2 flex gap-1">
+                                    <label className="cursor-pointer">
+                                      <input
+                                        type="file"
+                                        accept="image/*"
+                                        className="hidden"
+                                        onChange={(e) => handleCharImageUpload(char.id, e)}
+                                        disabled={uploadingCharImage === char.id}
+                                      />
+                                      <Button
+                                        size="sm"
+                                        variant="secondary"
+                                        className="h-7 w-7 p-0 rounded-full shadow-md"
+                                        disabled={generating !== null || uploadingCharImage === char.id}
+                                        title="上传角色图"
+                                      >
+                                        {uploadingCharImage === char.id ? (
+                                          <Loader2 className="w-3 h-3 animate-spin" />
+                                        ) : (
+                                          <UploadCloud className="w-3 h-3 text-blue-500" />
+                                        )}
+                                      </Button>
+                                    </label>
+                                    <Button
+                                      size="sm"
+                                      variant="secondary"
+                                      className="h-7 w-7 p-0 rounded-full shadow-md"
+                                      disabled={generating !== null}
+                                      onClick={() => startGenerateWithShot("character_image", char.id, true)}
+                                      title="AI重绘"
+                                    >
+                                      <Loader2 className="w-3 h-3 text-orange-500" />
+                                    </Button>
+                                  </div>
+                                </>
+                              ) : (
+                                <div className="relative w-24 h-24">
+                                  <label className="cursor-pointer w-full h-full">
+                                    <input
+                                      type="file"
+                                      accept="image/*"
+                                      className="hidden"
+                                      onChange={(e) => handleCharImageUpload(char.id, e)}
+                                      disabled={uploadingCharImage === char.id}
+                                    />
+                                    <div className={`w-24 h-24 rounded-lg border-2 border-dashed flex flex-col items-center justify-center transition-colors ${
+                                      uploadingCharImage === char.id
+                                        ? "border-gray-300 bg-gray-50"
+                                        : "border-gray-300 hover:border-blue-400 hover:bg-blue-50"
+                                    }`}>
+                                      {uploadingCharImage === char.id ? (
+                                        <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
+                                      ) : (
+                                        <>
+                                          <UploadCloud className="w-6 h-6 text-gray-400 mb-1" />
+                                          <span className="text-xs text-gray-400">上传</span>
+                                        </>
+                                      )}
+                                    </div>
+                                  </label>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="absolute -bottom-2 right-0 h-7 text-xs px-2"
+                                    disabled={generating !== null}
+                                    onClick={() => startGenerateWithShot("character_image", char.id, true)}
+                                    title="或使用AI生成"
+                                  >
+                                    AI生成
+                                  </Button>
                                 </div>
-                              </Button>
-                            )}
+                              )}
+                            </div>
                             <div className="flex-1">
                               <div className="flex items-center justify-between">
                                 <h3 className="font-semibold">{char.name}</h3>
@@ -948,7 +2245,7 @@ export default function ProjectPage() {
                               size="sm" 
                               variant={shot.firstFrame ? "ghost" : "outline"}
                               disabled={generating !== null}
-                              onClick={() => startGenerateWithShot("frame_generate", shot.id)}
+                              onClick={() => startGenerateWithShot("frame_generate", shot.id, true)}
                               className={shot.firstFrame ? "text-orange-500" : ""}
                             >
                               {shot.firstFrame ? <Loader2 className="w-4 h-4 mr-1" /> : <Image className="w-4 h-4 mr-1" />}
@@ -961,7 +2258,7 @@ export default function ProjectPage() {
                                 size="sm" 
                                 variant={shot.lastFrame ? "ghost" : "outline"}
                                 disabled={generating !== null}
-                                onClick={() => startGenerateWithShot("frame_generate", shot.id)}
+                                onClick={() => startGenerateWithShot("frame_generate", shot.id, true)}
                                 className={shot.lastFrame ? "text-orange-500" : ""}
                               >
                                 {shot.lastFrame ? <Loader2 className="w-4 h-4 mr-1" /> : <Image className="w-4 h-4 mr-1" />}
@@ -975,7 +2272,7 @@ export default function ProjectPage() {
                                 size="sm" 
                                 variant="outline"
                                 disabled={generating !== null}
-                                onClick={() => startGenerateWithShot("video_generate", shot.id)}
+                                onClick={() => startGenerateWithShot("video_generate", shot.id, true)}
                               >
                                 <Film className="w-4 h-4 mr-1" />
                                 生成视频
@@ -1055,11 +2352,132 @@ export default function ProjectPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* 角色描述模板管理对话框 */}
+      <Dialog open={showTemplateSettings} onOpenChange={setShowTemplateSettings}>
+        <DialogContent className="sm:max-w-[700px] max-h-[80vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Sparkles className="w-5 h-5 text-purple-600" />
+              角色描述模板管理
+            </DialogTitle>
+            <DialogDescription>
+              管理角色描述的生成模板。默认模板不可修改，可以创建新模板进行自定义。
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex-1 overflow-y-auto py-4">
+            {templateLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
+                <span className="ml-2 text-sm text-gray-500">加载中...</span>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {charTemplates.map((template) => (
+                  <Card key={template.id} className={template.isDefault ? "bg-gray-50" : ""}>
+                    <CardContent className="pt-4">
+                      {editingTemplate?.id === template.id ? (
+                        <div className="space-y-3">
+                          <Input
+                            value={editingTemplate.name}
+                            onChange={(e) => setEditingTemplate({ ...editingTemplate, name: e.target.value })}
+                            placeholder="模板名称"
+                          />
+                          <div>
+                            <label className="text-sm font-medium mb-1 block">模板描述</label>
+                            <Input
+                              value={editingTemplate.description}
+                              onChange={(e) => setEditingTemplate({ ...editingTemplate, description: e.target.value })}
+                              placeholder="模板描述"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-sm font-medium mb-1 block">System Prompt（角色提取提示词）</label>
+                            <Textarea
+                              value={editingTemplate.systemPrompt}
+                              onChange={(e) => setEditingTemplate({ ...editingTemplate, systemPrompt: e.target.value })}
+                              rows={12}
+                              className="font-mono text-xs"
+                              placeholder="输入 AI 角色描述的系统提示词..."
+                            />
+                          </div>
+                          <div className="flex gap-2">
+                            <Button size="sm" onClick={handleSaveTemplate}>
+                              保存
+                            </Button>
+                            <Button size="sm" variant="ghost" onClick={() => setEditingTemplate(null)}>
+                              取消
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div>
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <h3 className="font-medium">{template.name}</h3>
+                              {template.isDefault && (
+                                <Badge variant="secondary" className="text-xs">默认</Badge>
+                              )}
+                            </div>
+                            <div className="flex gap-1">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => setEditingTemplate({ ...template })}
+                                disabled={template.isDefault}
+                              >
+                                <Edit2 className="w-3 h-3" />
+                              </Button>
+                              {!template.isDefault && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => handleDeleteTemplate(template.id)}
+                                >
+                                  <Trash2 className="w-3 h-3 text-red-500" />
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                          {template.description && (
+                            <p className="text-sm text-gray-500 mt-1">{template.description}</p>
+                          )}
+                          <p className="text-xs text-gray-400 mt-2 line-clamp-2">
+                            {template.systemPrompt?.substring(0, 200)}...
+                          </p>
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                ))}
+
+                {charTemplates.length === 0 && !templateLoading && (
+                  <div className="text-center py-8 text-gray-500">
+                    <Sparkles className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                    <p>暂无自定义模板</p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowTemplateSettings(false)}>
+              关闭
+            </Button>
+            <Button onClick={handleCreateTemplate}>
+              <Plus className="w-4 h-4 mr-1" />
+              创建新模板
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 
   // 辅助函数：针对单个分镜生成
-  async function startGenerateWithShot(action: string, shotId: string) {
+  async function startGenerateWithShot(action: string, shotId: string, force = false) {
     setGenerating(action);
     try {
       const res = await fetch(`/api/projects/${projectId}/generate`, {
@@ -1083,6 +2501,7 @@ export default function ProjectPage() {
           projectId,
           action,
           shotId,
+          force,
         }),
       });
 
