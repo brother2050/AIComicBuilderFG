@@ -205,6 +205,7 @@ export async function generateFrames(
       // 生成首帧
       if (needFirstFrame) {
         const firstFramePath = await generateFirstFrame(
+          projectId,
           shot,
           previousLastFrame,
           charRefs,
@@ -232,6 +233,7 @@ export async function generateFrames(
       // 生成尾帧
       if (needLastFrame) {
         const lastFramePath = await generateLastFrame(
+          projectId,
           shot,
           charRefs,
           project.style || "anime",
@@ -296,6 +298,7 @@ export async function generateFrames(
  * 如果上一分镜有尾帧，直接复用；否则生成新的首帧
  */
 async function generateFirstFrame(
+  projectId: string,
   shot: typeof shots.$inferSelect,
   previousLastFrame: string | undefined,
   charRefs: Array<{ name: string; visualHint: string; referenceImage?: string }>,
@@ -327,7 +330,7 @@ async function generateFirstFrame(
       return comfyProvider.generateImageWithWorkflow(
         firstFramePrompt,
         customWorkflow,
-        { size: aspectSize },
+        { size: aspectSize, projectId },
         async (promptId: string) => {
           await db.update(shots)
             .set({ firstFramePromptId: promptId })
@@ -339,7 +342,7 @@ async function generateFirstFrame(
 
   return imageProvider.generateImage(
     firstFramePrompt,
-    { size: aspectSize, customWorkflow },
+    { size: aspectSize, customWorkflow, projectId },
     // ComfyUI 模式：保存 promptId 用于恢复
     useComfyUI ? async (promptId: string) => {
       await db.update(shots)
@@ -353,6 +356,7 @@ async function generateFirstFrame(
  * 生成尾帧
  */
 async function generateLastFrame(
+  projectId: string,
   shot: typeof shots.$inferSelect,
   charRefs: Array<{ name: string; visualHint: string; referenceImage?: string }>,
   style: string,
@@ -375,7 +379,7 @@ async function generateLastFrame(
       return comfyProvider.generateImageWithWorkflow(
         lastFramePrompt,
         customWorkflow,
-        { size: aspectSize },
+        { size: aspectSize, projectId },
         async (promptId: string) => {
           await db.update(shots)
             .set({ lastFramePromptId: promptId })
@@ -387,7 +391,7 @@ async function generateLastFrame(
 
   return imageProvider.generateImage(
     lastFramePrompt,
-    { size: aspectSize, customWorkflow },
+    { size: aspectSize, customWorkflow, projectId },
     // ComfyUI 模式：保存 promptId 用于恢复
     useComfyUI ? async (promptId: string) => {
       await db.update(shots)

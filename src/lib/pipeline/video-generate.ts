@@ -107,6 +107,7 @@ export async function generateVideos(
         lastFrame: shot.lastFrame,
         duration: shot.duration || 5,
         ratio: project.aspectRatio || "16:9",
+        projectId,
       }, customWorkflow);
 
       await db.update(shots)

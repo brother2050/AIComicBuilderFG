@@ -100,6 +100,11 @@ export async function DELETE(
   const { id } = await params;
   
   try {
+    // 先删除关联文件
+    const { deleteProjectFiles } = await import("@/lib/fs");
+    await deleteProjectFiles(id);
+    
+    // 删除数据库记录（级联删除关联表）
     await db.delete(projects).where(eq(projects.id, id));
     return NextResponse.json({ success: true });
   } catch (error) {

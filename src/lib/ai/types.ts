@@ -36,6 +36,7 @@ export interface ImageOptions {
   workflowFile?: string; // 工作流模板文件名 (ComfyUI)
   onPromptIdSubmit?: (promptId: string) => void | Promise<void>; // ComfyUI 提交后回调
   customWorkflow?: Record<string, unknown>; // 自定义工作流 JSON
+  projectId?: string; // 项目ID，用于分目录存储
 }
 
 // 视频生成参数
@@ -46,6 +47,7 @@ export interface VideoGenerateParams {
   initialImage?: string; // 参考图
   duration?: number; // 时长（秒）
   ratio?: string; // 比例 "16:9", "9:16", "1:1"
+  projectId?: string; // 项目ID，用于分目录存储
 }
 
 // 视频生成结果

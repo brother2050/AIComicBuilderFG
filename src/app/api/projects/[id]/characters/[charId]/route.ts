@@ -5,6 +5,7 @@
 import { NextResponse } from "next/server";
 import { db, characters } from "@/lib/db";
 import { eq } from "drizzle-orm";
+import { deleteCharacterImage } from "@/lib/fs";
 
 export async function GET(
   request: Request,
@@ -92,6 +93,11 @@ export async function DELETE(
 
     if (!existingChar || existingChar.projectId !== projectId) {
       return NextResponse.json({ error: "Character not found" }, { status: 404 });
+    }
+
+    // 删除角色图片
+    if (existingChar.referenceImage) {
+      await deleteCharacterImage(existingChar.referenceImage);
     }
 
     await db.delete(characters).where(eq(characters.id, charId));

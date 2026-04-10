@@ -3,6 +3,7 @@ import { ulid } from "ulid";
 import * as fs from "fs";
 import * as path from "path";
 import { loadWorkflowTemplate, applyWorkflowParams, type WorkflowParams } from "./workflow-template";
+import { getProjectFramesDir, getProjectVideosDir } from "@/lib/fs";
 
 export interface ComfyUIProviderConfig {
   apiUrl?: string;
@@ -343,7 +344,7 @@ export class ComfyUIImageProvider implements AIProvider {
 
       // 轮询等待完成
       console.log(`[ComfyUI Image] Waiting for completion...`);
-      const result = await this.waitForCompletion(client, prompt_id);
+      const result = await this.waitForCompletion(client, prompt_id, options);
       
       if (result.status === "completed" && result.filePath) {
         console.log(`[ComfyUI Image] Completed:`, {
@@ -412,7 +413,7 @@ export class ComfyUIImageProvider implements AIProvider {
       }
 
       // 轮询等待完成
-      const result = await this.waitForCompletion(client, prompt_id);
+      const result = await this.waitForCompletion(client, prompt_id, options);
       
       if (result.status === "completed" && result.filePath) {
         return result.filePath;
@@ -427,6 +428,7 @@ export class ComfyUIImageProvider implements AIProvider {
   private async waitForCompletion(
     client: ComfyUIAPIClient, 
     promptId: string, 
+    options?: ImageOptions,
     maxRetries: number = 30,  // 30分钟超时
     intervalMs: number = 60000
   ): Promise<ComfyUIImageTaskResult> {
@@ -452,7 +454,7 @@ export class ComfyUIImageProvider implements AIProvider {
       }
 
       // 任务不在队列中，检查历史
-      const result = await this.checkHistoryForImage(client, promptId);
+      const result = await this.checkHistoryForImage(client, promptId, options);
       if (result) {
         return result;
       }
@@ -460,7 +462,7 @@ export class ComfyUIImageProvider implements AIProvider {
 
     // 超时后，最后一次尝试：直接从历史记录中查找（图片可能已生成）
     console.log(`[ComfyUI Image] Timeout reached, final attempt to retrieve image...`);
-    const finalResult = await this.checkHistoryForImage(client, promptId);
+    const finalResult = await this.checkHistoryForImage(client, promptId, options);
     if (finalResult) {
       return finalResult;
     }
@@ -473,7 +475,8 @@ export class ComfyUIImageProvider implements AIProvider {
    */
   private async checkHistoryForImage(
     client: ComfyUIAPIClient,
-    promptId: string
+    promptId: string,
+    options?: ImageOptions
   ): Promise<ComfyUIImageTaskResult | null> {
     try {
       const history = await client.getHistory(promptId);
@@ -494,9 +497,14 @@ export class ComfyUIImageProvider implements AIProvider {
                 imageInfo.subfolder || ""
               );
 
-              // 保存到本地
+              // 保存到本地 - 按项目分目录
               const filename = `${ulid()}.png`;
-              const dir = path.join(this.uploadDir, "frames");
+              let dir: string;
+              if (options?.projectId) {
+                dir = getProjectFramesDir(options.projectId);
+              } else {
+                dir = path.join(this.uploadDir, "frames");
+              }
               fs.mkdirSync(dir, { recursive: true });
               const filepath = path.join(dir, filename);
               fs.writeFileSync(filepath, imageBuffer);
@@ -639,7 +647,7 @@ export class ComfyUIVideoProvider implements VideoProvider {
       // 轮询等待完成
       const startTime = Date.now();
       console.log(`[ComfyUI Video] Waiting for completion...`);
-      const result = await this.waitForVideoCompletion(client, prompt_id);
+      const result = await this.waitForVideoCompletion(client, prompt_id, params);
       
       const duration = ((Date.now() - startTime) / 1000).toFixed(1);
       console.log(`[ComfyUI Video] ========== Video Generation Completed ==========`);
@@ -733,6 +741,7 @@ export class ComfyUIVideoProvider implements VideoProvider {
   private async waitForVideoCompletion(
     client: ComfyUIVideoClient,
     promptId: string,
+    params: VideoGenerateParams,
     maxRetries: number = 300,
     intervalMs: number = 2000
   ): Promise<VideoGenerateResult> {
@@ -790,7 +799,12 @@ export class ComfyUIVideoProvider implements VideoProvider {
 
                 const buffer = Buffer.from(await response.arrayBuffer());
                 const filename = `${ulid()}.mp4`;
-                const dir = path.join(uploadDir, "videos");
+                let dir: string;
+                if (params.projectId) {
+                  dir = getProjectVideosDir(params.projectId);
+                } else {
+                  dir = path.join(uploadDir, "videos");
+                }
                 fs.mkdirSync(dir, { recursive: true });
                 const filepath = path.join(dir, filename);
                 fs.writeFileSync(filepath, buffer);

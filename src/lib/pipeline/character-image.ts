@@ -150,6 +150,7 @@ export async function generateCharacterImages(
       steps: 8,
       cfg: 8.0,
       denoise: 1.0,
+      projectId,
     };
 
     // 完整参数信息（用于日志）
