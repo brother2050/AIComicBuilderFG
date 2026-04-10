@@ -7,11 +7,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { 
   Plus, 
   Film, 
-  Play, 
   Sparkles, 
   Trash2, 
   Loader2,
@@ -19,10 +17,7 @@ import {
   Users,
   Clapperboard,
   Copy,
-  Settings,
-  Wand2,
-  FileText,
-  Lightbulb
+  Settings
 } from "lucide-react";
 
 interface Project {
@@ -36,186 +31,91 @@ interface Project {
 interface NewProjectDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onCreate: (data: { title: string; script?: string; idea?: string; style: string }) => void;
-  onGenerateScript: (data: { title: string; idea: string; style: string }) => Promise<void>;
-  generating: boolean;
+  onCreate: (data: { title: string; style: string; description?: string }) => void;
 }
 
 function NewProjectDialog({ 
   open, 
   onOpenChange, 
   onCreate, 
-  onGenerateScript,
-  generating 
 }: NewProjectDialogProps) {
   const [title, setTitle] = useState("");
-  const [script, setScript] = useState("");
-  const [idea, setIdea] = useState("");
+  const [description, setDescription] = useState("");
   const [style, setStyle] = useState("anime");
-  const [tab, setTab] = useState<"script" | "idea">("idea");
 
   if (!open) return null;
 
-  const handleScriptSubmit = (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onCreate({ title, script, style });
+    if (!title.trim()) return;
+    onCreate({ title: title.trim(), style, description: description.trim() || undefined });
     setTitle("");
-    setScript("");
-    onOpenChange(false);
-  };
-
-  const handleIdeaSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    await onGenerateScript({ title, idea, style });
-    setTitle("");
-    setIdea("");
+    setDescription("");
     onOpenChange(false);
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <Card className="w-full max-w-2xl max-h-[90vh] overflow-auto">
+      <Card className="w-full max-w-lg">
         <CardHeader>
           <CardTitle>创建新项目</CardTitle>
           <CardDescription>
-            {tab === "idea" 
-              ? "输入你的想法，AI将为你生成完整剧本" 
-              : "输入剧本内容，AI将自动解析角色和分镜"
-            }
+            剧本将在流水线页面操作，每一集可使用不同剧本
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <Tabs value={tab} onValueChange={(v) => setTab(v as "script" | "idea")}>
-            <TabsList className="grid w-full grid-cols-2 mb-4">
-              <TabsTrigger value="idea" className="flex items-center gap-2">
-                <Lightbulb className="w-4 h-4" />
-                AI生成剧本
-              </TabsTrigger>
-              <TabsTrigger value="script" className="flex items-center gap-2">
-                <FileText className="w-4 h-4" />
-                粘贴剧本
-              </TabsTrigger>
-            </TabsList>
-
-            {/* AI生成剧本选项卡 */}
-            <TabsContent value="idea">
-              <form onSubmit={handleIdeaSubmit} className="space-y-4">
-                <div>
-                  <label className="text-sm font-medium">项目标题</label>
-                  <Input
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    placeholder="输入项目标题（可选，AI会生成）"
-                    className="mt-1"
-                  />
-                </div>
-                <div>
-                  <label className="text-sm font-medium">风格</label>
-                  <div className="flex gap-2 mt-1 flex-wrap">
-                    {[
-                      { value: "anime", label: "日漫", desc: "注重情感、视觉冲击" },
-                      { value: "realistic", label: "写实", desc: "真实细腻、注重细节" },
-                      { value: "3d", label: "3D", desc: "立体感强、动作流畅" },
-                      { value: "cartoon", label: "卡通", desc: "色彩鲜艳、可爱" },
-                    ].map((s) => (
-                      <Button
-                        key={s.value}
-                        type="button"
-                        variant={style === s.value ? "default" : "outline"}
-                        onClick={() => setStyle(s.value)}
-                        className="flex flex-col h-auto py-2 px-3"
-                        title={s.desc}
-                      >
-                        <span className="capitalize">{s.label}</span>
-                      </Button>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <label className="text-sm font-medium">创作想法</label>
-                  <Textarea
-                    value={idea}
-                    onChange={(e) => setIdea(e.target.value)}
-                    placeholder={"描述你的故事想法...\n\n例如：\n- 一个年轻画家在咖啡店遇到了神秘的陌生女子\n- 穿越到古代的现代高中生成为宫廷画家\n- 机器人艺术家追求创作情感的故事"}
-                    className="mt-1 min-h-[200px]"
-                    required
-                  />
-                  <p className="text-xs text-gray-500 mt-1">
-                    请详细描述故事情节、角色设定、场景等，AI会根据你的想法生成完整剧本
-                  </p>
-                </div>
-                <div className="flex justify-end gap-2">
-                  <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-                    取消
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label className="text-sm font-medium">项目标题</label>
+              <Input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="输入项目标题"
+                className="mt-1"
+                required
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium">风格</label>
+              <div className="flex gap-2 mt-1 flex-wrap">
+                {[
+                  { value: "anime", label: "日漫", desc: "注重情感、视觉冲击" },
+                  { value: "realistic", label: "写实", desc: "真实细腻、注重细节" },
+                  { value: "3d", label: "3D", desc: "立体感强、动作流畅" },
+                  { value: "cartoon", label: "卡通", desc: "色彩鲜艳、可爱" },
+                ].map((s) => (
+                  <Button
+                    key={s.value}
+                    type="button"
+                    variant={style === s.value ? "default" : "outline"}
+                    onClick={() => setStyle(s.value)}
+                    className="flex flex-col h-auto py-2 px-3"
+                    title={s.desc}
+                  >
+                    <span className="capitalize">{s.label}</span>
                   </Button>
-                  <Button type="submit" disabled={generating || !idea.trim()}>
-                    {generating ? (
-                      <>
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                        AI正在生成剧本...
-                      </>
-                    ) : (
-                      <>
-                        <Wand2 className="w-4 h-4 mr-2" />
-                        生成剧本并创建项目
-                      </>
-                    )}
-                  </Button>
-                </div>
-              </form>
-            </TabsContent>
-
-            {/* 粘贴剧本选项卡 */}
-            <TabsContent value="script">
-              <form onSubmit={handleScriptSubmit} className="space-y-4">
-                <div>
-                  <label className="text-sm font-medium">项目标题</label>
-                  <Input
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    placeholder="输入项目标题"
-                    className="mt-1"
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="text-sm font-medium">风格</label>
-                  <div className="flex gap-2 mt-1">
-                    {["anime", "realistic", "3d", "cartoon"].map((s) => (
-                      <Button
-                        key={s}
-                        type="button"
-                        variant={style === s ? "default" : "outline"}
-                        onClick={() => setStyle(s)}
-                        className="capitalize"
-                      >
-                        {s}
-                      </Button>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <label className="text-sm font-medium">剧本内容</label>
-                  <Textarea
-                    value={script}
-                    onChange={(e) => setScript(e.target.value)}
-                    placeholder="粘贴或输入剧本内容..."
-                    className="mt-1 min-h-[200px]"
-                    required
-                  />
-                </div>
-                <div className="flex justify-end gap-2">
-                  <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-                    取消
-                  </Button>
-                  <Button type="submit">
-                    <Sparkles className="w-4 h-4 mr-2" />
-                    创建项目
-                  </Button>
-                </div>
-              </form>
-            </TabsContent>
-          </Tabs>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="text-sm font-medium">剧简介（可选）</label>
+              <Textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="简要描述故事背景、主题等..."
+                className="mt-1 min-h-[80px]"
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+                取消
+              </Button>
+              <Button type="submit" disabled={!title.trim()}>
+                <Sparkles className="w-4 h-4 mr-2" />
+                创建项目
+              </Button>
+            </div>
+          </form>
         </CardContent>
       </Card>
     </div>
@@ -286,8 +186,6 @@ export default function HomePage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [creating, setCreating] = useState(false);
-  const [generating, setGenerating] = useState(false);
   const router = useRouter();
 
   useEffect(() => {
@@ -306,8 +204,7 @@ export default function HomePage() {
     }
   };
 
-  const handleCreateProject = async (data: { title: string; script?: string; idea?: string; style: string }) => {
-    setCreating(true);
+  const handleCreateProject = async (data: { title: string; style: string; description?: string }) => {
     try {
       const res = await fetch("/api/projects", {
         method: "POST",
@@ -317,75 +214,10 @@ export default function HomePage() {
       const result = await res.json();
       if (result.project) {
         setProjects([result.project, ...projects]);
-        // 如果有idea，跳转到项目页面
-        if (data.idea) {
-          router.push(`/project/${result.project.id}`);
-        }
+        router.push(`/project/${result.project.id}`);
       }
     } catch (error) {
       console.error("Failed to create project:", error);
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const handleGenerateScript = async (data: { title: string; idea: string; style: string }) => {
-    setGenerating(true);
-    let projectId = null;
-    
-    try {
-      // 1. 创建项目
-      const createRes = await fetch("/api/projects", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: data.title || "AI生成剧本", style: data.style }),
-      });
-      const createResult = await createRes.json();
-
-      if (!createResult.project) {
-        throw new Error("Failed to create project");
-      }
-
-      projectId = createResult.project.id;
-
-      // 2. 创建生成任务
-      const taskRes = await fetch(`/api/projects/${projectId}/generate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "script_generate", idea: data.idea, style: data.style }),
-      });
-      const taskResult = await taskRes.json();
-
-      if (!taskResult.success) {
-        throw new Error(taskResult.error || "Failed to start generation");
-      }
-
-      // 3. 启动任务执行
-      await fetch("/api/tasks/execute", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          taskId: taskResult.taskId,
-          projectId,
-          action: "script_generate",
-          idea: data.idea,
-          style: data.style,
-        }),
-      });
-
-      // 4. 关闭对话框并跳转到项目页面
-      // 任务将在后台继续执行
-      router.push(`/project/${projectId}`);
-    } catch (error) {
-      console.error("Failed to generate script:", error);
-      alert(error instanceof Error ? error.message : "生成剧本失败，请重试");
-      
-      // 如果已创建项目但生成失败，跳转到项目页面手动重试
-      if (projectId) {
-        router.push(`/project/${projectId}`);
-      }
-    } finally {
-      setGenerating(false);
     }
   };
 
@@ -484,8 +316,6 @@ export default function HomePage() {
         open={dialogOpen}
         onOpenChange={setDialogOpen}
         onCreate={handleCreateProject}
-        onGenerateScript={handleGenerateScript}
-        generating={generating}
       />
     </div>
   );

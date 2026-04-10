@@ -135,6 +135,46 @@ src/
 | result | json | 任务结果 |
 | error | text | 错误信息 |
 
+### templates (模板表)
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | text | 主键 |
+| name | text | 模板名称 |
+| description | text | 模板描述 |
+| type | text | 模板类型 |
+| systemPrompt | text | 系统提示词 |
+| projectId | text | 关联项目 |
+| isDefault | boolean | 是否默认模板 |
+| createdAt | timestamp | 创建时间 |
+| updatedAt | timestamp | 更新时间 |
+
+## 数据库迁移
+
+项目使用 Drizzle ORM 管理数据库迁移，迁移文件位于 `drizzle/` 目录。
+
+### 执行迁移
+
+```bash
+# 方式1：使用 drizzle-kit push（推荐，自动同步 schema）
+pnpm drizzle-kit push
+
+# 方式2：手动执行 SQL 迁移文件
+sqlite3 data/comic.db < drizzle/0004_add_templates_fields.sql
+
+# 方式3：生成迁移文件（用于版本控制）
+pnpm drizzle-kit generate
+```
+
+### 迁移文件说明
+
+| 文件 | 说明 |
+|------|------|
+| 0000_puzzling_gauntlet.sql | 初始表结构 |
+| 0001_add_image_workflow.sql | 添加图片工作流字段 |
+| 0002_add_templates.sql | 添加模板表 |
+| 0003_add_character_fields.sql | 添加角色视觉描述字段 |
+| 0004_add_templates_fields.sql | 添加模板描述和默认标识 |
+
 ## API 接口
 
 ### 项目管理

@@ -80,6 +80,7 @@ interface Character {
   name: string;
   description: string;
   visualHint: string;
+  visualDescription: string;
   referenceImage: string | null;
   scope: string;
 }
@@ -842,6 +843,8 @@ export default function ProjectPage() {
           projectId,
           action,
           episode: options?.episode || activeEpisode,
+          idea: options?.idea,
+          style: options?.style,
         }),
       });
 
@@ -928,9 +931,9 @@ export default function ProjectPage() {
     await fetch(`/api/projects/${projectId}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ script: newScript }),
+      body: JSON.stringify({ scriptText: newScript }),
     });
-    setProject({ ...project!, script: newScript });
+    setProject({ ...project!, scriptText: newScript });
     setEditingScript(false);
   };
 
@@ -1864,14 +1867,14 @@ export default function ProjectPage() {
                   <CardContent>
                     {editingScript ? (
                       <Textarea
-                        value={project.script || ""}
-                        onChange={(e) => setProject({ ...project, script: e.target.value })}
+                        value={project.scriptText || project.script || ""}
+                        onChange={(e) => setProject({ ...project, scriptText: e.target.value })}
                         className="min-h-[300px]"
                         placeholder="输入或粘贴剧本内容..."
                       />
                     ) : (
                       <Textarea
-                        value={project.script || ""}
+                        value={project.scriptText || project.script || ""}
                         readOnly
                         className="min-h-[300px]"
                         placeholder="输入或粘贴剧本内容..."
@@ -1987,12 +1990,18 @@ export default function ProjectPage() {
                           <Input
                             value={editingChar.visualHint}
                             onChange={(e) => setEditingChar({ ...editingChar, visualHint: e.target.value })}
-                            placeholder="视觉描述"
+                            placeholder="视觉提示（简短关键词，3-5词）"
                           />
                           <Textarea
                             value={editingChar.description}
                             onChange={(e) => setEditingChar({ ...editingChar, description: e.target.value })}
-                            placeholder="角色描述"
+                            placeholder="角色剧情描述（背景故事、性格特点、在剧情中的作用）"
+                            rows={2}
+                          />
+                          <Textarea
+                            value={editingChar.visualDescription}
+                            onChange={(e) => setEditingChar({ ...editingChar, visualDescription: e.target.value })}
+                            placeholder="角色形象描述（专业外貌描述，用于AI生成角色图片）"
                             rows={3}
                           />
                           <div className="flex gap-2">
@@ -2138,6 +2147,7 @@ export default function ProjectPage() {
                         name: "",
                         description: "",
                         visualHint: "",
+                        visualDescription: "",
                         referenceImage: null,
                         scope: "main",
                       })}
@@ -2462,7 +2472,12 @@ export default function ProjectPage() {
                 <Textarea
                   value={ideaText}
                   onChange={(e) => setIdeaText(e.target.value)}
-                  placeholder="描述你的故事想法...\n\n例如：\n- 一个年轻画家在咖啡店遇到了神秘的陌生女子\n- 穿越到古代的现代高中生成为宫廷画家\n- 机器人艺术家追求创作情感的故事"
+                  placeholder={`描述你的故事想法...
+
+例如：
+- 一个年轻画家在咖啡店遇到了神秘的陌生女子
+- 穿越到古代的现代高中生成为宫廷画家
+- 机器人艺术家追求创作情感的故事`}
                   rows={8}
                 />
                 <p className="text-xs text-gray-500 mt-1">
@@ -2508,7 +2523,17 @@ export default function ProjectPage() {
                 <Textarea
                   value={scriptInputText}
                   onChange={(e) => setScriptInputText(e.target.value)}
-                  placeholder="在此粘贴或输入剧本内容...\n\n格式示例：\n【场景1】咖啡店\n角色：小明、小美\n对白：\n小明：今天的天气真好啊。\n小美：是啊，很适合出门。\n\n【场景2】公园\n..."
+                  placeholder={`在此粘贴或输入剧本内容...
+
+格式示例：
+【场景1】咖啡店
+角色：小明、小美
+对白：
+小明：今天的天气真好啊。
+小美：是啊，很适合出门。
+
+【场景2】公园
+...`}
                   rows={12}
                 />
               </div>
