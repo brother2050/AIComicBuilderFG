@@ -37,6 +37,7 @@ import {
   Box,
   UploadCloud,
   Layers,
+  FileText,
 } from "lucide-react";
 import { getFileUrl } from "@/lib/utils";
 import { TaskManager } from "@/components/TaskManager";
@@ -251,6 +252,11 @@ export default function ProjectPage() {
   const [showIdeaDialog, setShowIdeaDialog] = useState(false);
   const [ideaText, setIdeaText] = useState("");
   const [selectedStyle, setSelectedStyle] = useState("anime");
+
+  // 剧本输入对话框（包含两种模式：AI生成 & 粘贴剧本）
+  const [showScriptDialog, setShowScriptDialog] = useState(false);
+  const [scriptInputText, setScriptInputText] = useState("");
+  const [scriptDialogTab, setScriptDialogTab] = useState<"idea" | "paste">("idea");
 
   // 工作流设置
   const [showWorkflowSettings, setShowWorkflowSettings] = useState(false);
@@ -866,6 +872,43 @@ export default function ProjectPage() {
     setIdeaText("");
   };
 
+  // 提交剧本（粘贴模式）
+  const handleScriptPasteSubmit = async () => {
+    if (!scriptInputText.trim()) {
+      alert("请输入剧本内容");
+      return;
+    }
+
+    setShowScriptDialog(false);
+    await handleScriptSave(scriptInputText);
+    setScriptInputText("");
+  };
+
+  // 提交剧本（AI生成模式）
+  const handleScriptDialogIdeaSubmit = async () => {
+    if (!ideaText.trim()) {
+      alert("请输入创作想法");
+      return;
+    }
+
+    setShowScriptDialog(false);
+    await startGenerate("script_generate", { idea: ideaText, style: selectedStyle });
+    setIdeaText("");
+  };
+
+  // 打开剧本对话框（用于流水线点击）
+  const openScriptDialog = () => {
+    // 如果已有剧本，询问是重新生成还是编辑
+    if (project?.script) {
+      setScriptInputText(project.script);
+      setScriptDialogTab("paste");
+    } else {
+      setScriptDialogTab("idea");
+      setIdeaText("");
+    }
+    setShowScriptDialog(true);
+  };
+
   const cancelTask = async () => {
     if (!taskProgress?.taskId) return;
     
@@ -1253,7 +1296,14 @@ export default function ProjectPage() {
                           size="sm"
                           variant={isCompleted ? "ghost" : "outline"}
                           disabled={isDisabled || isRunning || generating !== null}
-                          onClick={() => startGenerate(step.action, { force: isCompleted })}
+                          onClick={() => {
+                            // 剧本生成步骤：弹出选择对话框
+                            if (step.action === "script_generate" || step.action === "script_parse") {
+                              openScriptDialog();
+                            } else {
+                              startGenerate(step.action, { force: isCompleted });
+                            }
+                          }}
                           className={isCompleted ? "text-orange-500" : ""}
                           title={isCompleted ? "重新生成" : "生成"}
                         >
@@ -2350,6 +2400,102 @@ export default function ProjectPage() {
               开始生成
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 剧本输入对话框（两种模式） */}
+      <Dialog open={showScriptDialog} onOpenChange={setShowScriptDialog}>
+        <DialogContent className="sm:max-w-[700px] max-h-[85vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileText className="w-5 h-5 text-blue-500" />
+              剧本输入
+            </DialogTitle>
+            <DialogDescription>
+              选择方式输入剧本内容
+            </DialogDescription>
+          </DialogHeader>
+          
+          <Tabs value={scriptDialogTab} onValueChange={(v) => setScriptDialogTab(v as "idea" | "paste")}>
+            <TabsList className="grid w-full grid-cols-2">
+              <TabsTrigger value="idea" className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4" />
+                AI生成剧本
+              </TabsTrigger>
+              <TabsTrigger value="paste" className="flex items-center gap-2">
+                <FileText className="w-4 h-4" />
+                粘贴剧本
+              </TabsTrigger>
+            </TabsList>
+
+            {/* AI生成剧本选项卡 */}
+            <TabsContent value="idea" className="space-y-4 py-4">
+              <div>
+                <label className="text-sm font-medium mb-2 block">创作想法</label>
+                <Textarea
+                  value={ideaText}
+                  onChange={(e) => setIdeaText(e.target.value)}
+                  placeholder="描述你的故事想法...\n\n例如：\n- 一个年轻画家在咖啡店遇到了神秘的陌生女子\n- 穿越到古代的现代高中生成为宫廷画家\n- 机器人艺术家追求创作情感的故事"
+                  rows={8}
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  请详细描述故事情节、角色设定、场景等，AI会根据你的想法生成完整剧本
+                </p>
+              </div>
+              <div>
+                <label className="text-sm font-medium mb-2 block">风格</label>
+                <div className="flex gap-2 flex-wrap">
+                  {[
+                    { value: "anime", label: "日漫", desc: "注重情感、视觉冲击" },
+                    { value: "realistic", label: "写实", desc: "真实细腻、注重细节" },
+                    { value: "3d", label: "3D", desc: "立体感强、动作流畅" },
+                    { value: "cartoon", label: "卡通", desc: "色彩鲜艳、可爱" },
+                  ].map((s) => (
+                    <Button
+                      key={s.value}
+                      size="sm"
+                      variant={selectedStyle === s.value ? "default" : "outline"}
+                      onClick={() => setSelectedStyle(s.value)}
+                      title={s.desc}
+                    >
+                      {s.label}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setShowScriptDialog(false)}>
+                  取消
+                </Button>
+                <Button onClick={handleScriptDialogIdeaSubmit} disabled={!ideaText.trim()}>
+                  <Sparkles className="w-4 h-4 mr-1" />
+                  开始生成剧本
+                </Button>
+              </DialogFooter>
+            </TabsContent>
+
+            {/* 粘贴剧本选项卡 */}
+            <TabsContent value="paste" className="space-y-4 py-4">
+              <div>
+                <label className="text-sm font-medium mb-2 block">剧本内容</label>
+                <Textarea
+                  value={scriptInputText}
+                  onChange={(e) => setScriptInputText(e.target.value)}
+                  placeholder="在此粘贴或输入剧本内容...\n\n格式示例：\n【场景1】咖啡店\n角色：小明、小美\n对白：\n小明：今天的天气真好啊。\n小美：是啊，很适合出门。\n\n【场景2】公园\n..."
+                  rows={12}
+                />
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setShowScriptDialog(false)}>
+                  取消
+                </Button>
+                <Button onClick={handleScriptPasteSubmit} disabled={!scriptInputText.trim()}>
+                  <Save className="w-4 h-4 mr-1" />
+                  保存剧本
+                </Button>
+              </DialogFooter>
+            </TabsContent>
+          </Tabs>
         </DialogContent>
       </Dialog>
 
