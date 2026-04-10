@@ -4,28 +4,88 @@
  */
 
 /**
- * 默认角色描述模板 - 专业级别
- * 包含完整的角色视觉描述指南，适用于 AI 图像生成
+ * 默认角色描述模板 - 剧情描述
+ * 用于从剧本中提取角色的背景、性格、作用等信息
  */
-export const DEFAULT_CHARACTER_DESCRIPTION_TEMPLATE = `You are a PROFESSIONAL Character Designer & Visual Artist with 20+ years of experience in concept art, anime, and cinematic illustration.
+export const DEFAULT_CHARACTER_DESCRIPTION_TEMPLATE = `You are a story analyst specializing in Chinese drama and animation scripts.
 
 ## YOUR TASK
-Analyze the provided script and create detailed, production-ready character descriptions optimized for high-quality AI image generation (ComfyUI/SD3).
+Extract character information from the script to create:
+1. Character background and role in the story
+2. Personality traits shown through dialogue
+3. Relationships with other characters
+
+## OUTPUT FORMAT (STRICT JSON - NO MARKDOWN, NO CODE BLOCKS)
+{
+  "characters": [
+    {
+      "name": "Character Name (角色名称)",
+      "scope": "main (主角) or guest (配角)",
+      "description": "Character's background, personality, role in story, and key traits (100-200 words, in Chinese)"
+    }
+  ]
+}
+
+## ANALYSIS REQUIREMENTS
+1. Analyze the character's dialogue to understand their personality
+2. Identify their role in the story (protagonist, mentor, villain, etc.)
+3. Note any special characteristics or backstory hints
+4. For traditional characters like Sun Wukong, use classic interpretations
+
+## EXAMPLE
+
+Input: A scene where Sun Wukong confronts Buddha
+Output: {
+  "characters": [
+    {
+      "name": "孙悟空",
+      "scope": "main",
+      "description": "齐天大圣，孙悟空是唐僧的大徒弟，拥有七十二变和筋斗云等神通。他性格刚烈不屈，重情重义，对师父忠心耿耿。面对强敌时英勇无畏，但也有急躁冲动的一面。他手持如意金箍棒，身披锁子黄金甲，头戴凤翅紫金冠，是经典的美猴王形象。"
+    },
+    {
+      "name": "如来",
+      "scope": "main",
+      "description": "佛祖，佛教的最高领袖。如来佛祖慈悲为怀，神通广大，能够洞察一切。他说话温和却充满智慧，常常用循循善诱的方式引导迷途之人。端坐于莲台之上，周身散发金色佛光，给人以威严而慈祥的感觉。"
+    }
+  ]
+}
+
+## CRITICAL RULES
+1. description should be in Chinese
+2. Focus on story elements, NOT visual appearance
+3. Return ONLY the JSON object - no explanations, no markdown
+4. Each character description must be self-contained`;
+
+export interface CharacterDescriptionTemplate {
+  id: string;
+  name: string;
+  description: string;
+  systemPrompt: string;
+  isDefault: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * 视觉描述系统提示词
+ */
+const VISUAL_DESCRIPTION_SYSTEM_PROMPT = `You are a PROFESSIONAL Character Designer & Visual Artist with 20+ years of experience in concept art, anime, and cinematic illustration.
+
+## YOUR TASK
+Create detailed, production-ready visual descriptions for AI image generation (ComfyUI/SD3).
 
 ## OUTPUT FORMAT (STRICT JSON - NO MARKDOWN, NO CODE BLOCKS)
 {
   "characters": [
     {
       "name": "Character Name",
-      "scope": "main",
-      "description": "Full professional character description (200-300 words)",
+      "visualDescription": "Detailed visual description in English (150-250 words)",
       "visualHint": "3-5 word image search hint"
     }
   ]
 }
 
-## DESCRIPTION STRUCTURE (Follow this exact format)
-Write in English. Structure each description as follows:
+## VISUAL DESCRIPTION STRUCTURE (Follow this exact format)
 
 ### 1. POSE & COMPOSITION
 - Character stance and body positioning
@@ -48,84 +108,79 @@ Write in English. Structure each description as follows:
 ### 4. LIGHTING & ATMOSPHERE
 - Lighting setup: rim light, softbox, dramatic chiaroscuro, natural sunlight
 - Color temperature: warm (3200K), cool (6500K), cinematic teal-orange
-- Atmosphere: ethereal glow, volumetric fog, lens flare, bokeh
 
 ### 5. ART STYLE REFERENCE
 - Style: anime cel-shading, illustration, concept art, photorealistic, 3D render
-- Artist reference: Studio Ghibli, Makoto Shinkai, Arcane style, Disney, Pixar
 - Quality tags: masterpiece, best quality, highly detailed, intricate, 8k
-
-## STYLE-SPECIFIC GUIDELINES
-
-### Anime Style
-- Cel-shaded with clean lineart
-- Vibrant saturated colors
-- Large expressive eyes with highlights
-- Dynamic hair with wind/physics effects
-- Exaggerated proportions for impact
-
-### Realistic/Cinematic Style
-- Photorealistic textures and materials
-- Cinematic color grading (teal-orange)
-- Professional studio lighting
-- Lens effects (depth of field, chromatic aberration)
-- Film grain for cinematic feel
-
-### 3D Animated Style
-- Smooth polygon models with SubSurface Scattering
-- Studio 3-point lighting
-- Pixar/Disney quality shading
-- Clean vector-like aesthetic
-
-### Illustration/Concept Art
-- Painterly brush strokes visible
-- Rich color gradients
-- Environmental storytelling elements
-- Architectural props and set dressing
 
 ## EXAMPLES
 
-### GOOD (Professional Grade):
-"A young female knight, 25, athletic warrior build with a commanding presence. Standing in a powerful 3/4 combat stance, her armored form creating dynamic diagonal composition. Long platinum silver hair (#E8E8E8) cascades past her waist with physics-reactive strands. Wears sleek black plate armor (hex #1a1a1a) with glowing cyan circuit patterns (#00FFFF) along the seams. Her expression is fierce yet determined, scarred left eye. Carries a massive zweihander sword crackling with electric energy. Dramatic rim lighting from behind creates a heroic silhouette effect. Anime cel-shading style reminiscent of Ghost in the Shell meets Final Fantasy. Masterpiece, best quality, highly detailed anime art."
-
-### BAD (Too Vague):
-"A brave hero who fights bad guys and has magical powers."
-
-## CRITICAL RULES
-1. ALWAYS write in English with proper grammar
-2. Use SPECIFIC hex color codes for important colors
-3. Include technical lighting/setup details
-4. Add quality tags: "masterpiece, best quality, highly detailed"
-5. Keep description between 200-300 words
-6. description MUST be a plain text string, NOT an object
-7. Return ONLY the JSON object - no explanations, no markdown, no code blocks
-8. Each character description must be COMPLETE and self-contained`;
-
-export interface CharacterDescriptionTemplate {
-  id: string;
-  name: string;
-  description: string;
-  systemPrompt: string;
-  isDefault: boolean;
-  createdAt: Date;
-  updatedAt: Date;
+### Sun Wukong (孙悟空):
+{
+  "name": "孙悟空",
+  "visualDescription": "A legendary Monkey King with a powerful athletic build. Standing in a heroic combat stance. He has a distinctive monkey face with sharp features, glowing golden eyes showing determination. Long flowing black hair with auburn highlights tied in a high ponytail with golden ornaments. Wearing iconic golden锁子甲 (scale armor) with red undergarments, crimson cape billowing dramatically. Armed with the massive Ruyi Golden Cudgel (如意金箍棒) held firmly. Head adorned with Phoenix Feather Crown (凤翅紫金冠). Dramatic golden rim lighting creates a heroic silhouette. Anime cel-shading style with bold outlines and vibrant colors. masterpiece, best quality, highly detailed anime art.",
+  "visualHint": "monkey king warrior"
 }
 
+### Buddha (如来):
+{
+  "name": "如来",
+  "visualDescription": "An ancient Buddha with a serene, ageless face radiating inner peace. Seated cross-legged on a magnificent golden lotus throne. Flowing saffron robes draped elegantly with intricate golden embroidery patterns. Radiant golden aura surrounding the entire figure. Soft warm lighting from within creating ethereal glow effect. Closed eyes with a subtle knowing smile. One hand in meditation mudra. Pure white/light background like divine realm. Photorealistic with soft focus on edges. masterpiece, best quality, highly detailed 8k illustration.",
+  "visualHint": "buddha serene divine"
+}
+
+## CRITICAL RULES
+1. ALWAYS write visualDescription in English
+2. Use SPECIFIC hex color codes for important colors
+3. Add quality tags: "masterpiece, best quality, highly detailed"
+4. Keep description between 150-250 words
+5. Return ONLY the JSON object - no explanations, no markdown
+6. Infer appearance from character name and story context`;
+
 /**
- * 构建角色描述提取的提示词
+ * 构建角色描述提取的提示词（剧情描述）
  */
 export function buildCharacterExtractPrompt(
   script: string,
   style: string = "anime",
   customTemplate?: string
 ): string {
-  const baseInstruction = customTemplate || getDefaultCharacterPrompt(style);
+  const systemPrompt = customTemplate || DEFAULT_CHARACTER_DESCRIPTION_TEMPLATE;
 
-  return `Extract and describe all characters from this ${style} style script:
+  return `${systemPrompt}
 
+SCRIPT:
 ${script}
 
-${baseInstruction}`;
+Analyze the script and extract character information. Return ONLY a valid JSON object.`;
+}
+
+/**
+ * 构建视觉描述提示词
+ */
+export function buildVisualDescriptionPrompt(
+  characters: Array<{ name: string; scope: string; description: string }>,
+  script: string,
+  style: string = "anime"
+): string {
+  const charactersJson = JSON.stringify(characters, null, 2);
+
+  return `${VISUAL_DESCRIPTION_SYSTEM_PROMPT}
+
+CHARACTERS TO DESIGN (from script analysis):
+${charactersJson}
+
+SCRIPT CONTEXT:
+${script}
+
+## STYLE REQUIREMENTS
+${style === "anime" ? "- Anime cel-shading style with clean lineart\n- Vibrant saturated colors\n- Large expressive eyes with highlights\n- Dynamic hair with wind effects" : style === "realistic" ? "- Photorealistic textures and materials\n- Cinematic color grading\n- Professional studio lighting\n- Depth of field effects" : style === "3d" ? "- Smooth 3D rendering quality\n- Pixar/Disney shading\n- Studio lighting\n- Polished surfaces" : "- Cartoon style with bold outlines\n- Simplified shapes\n- Bright saturated colors"}
+
+IMPORTANT:
+1. Infer physical appearance from the character's name, story context, and traditional interpretations
+2. For Sun Wukong: monkey features, golden armor, Ruyi Cudgel, Phoenix Crown
+3. For Buddha figures: serene expression, Buddha robes, lotus throne, golden aura
+4. Return ONLY a valid JSON object - no markdown formatting, no explanations`;
 }
 
 /**

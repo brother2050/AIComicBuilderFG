@@ -33,9 +33,9 @@ export async function executeTask(
   taskId: string,
   projectId: string,
   action: GenerateAction,
-  options?: { shotId?: string; idea?: string; style?: string; force?: boolean }
+  options?: { shotId?: string; idea?: string; style?: string; force?: boolean; episode?: number }
 ): Promise<void> {
-  const { shotId, idea, style, force = false } = options || {};
+  const { shotId, idea, style, force = false, episode = 1 } = options || {};
   console.log(`[Task] Execute request:`, {
     taskId,
     action,
@@ -100,7 +100,7 @@ export async function executeTask(
 
       case "character_extract": {
         await updateTaskStatus(taskId, "running", 20, "正在提取角色...");
-        const chars = await extractCharacters(projectId);
+        const chars = await extractCharacters(projectId, episode);
         await updateTaskStatus(taskId, "completed", 100, "角色提取完成", undefined, undefined, {
           characters: chars,
         });
@@ -215,7 +215,7 @@ export async function executeTask(
         await parseScript(projectId);
 
         await updateTaskStatus(taskId, "running", 15, "步骤 2/7: 提取角色");
-        await extractCharacters(projectId);
+        await extractCharacters(projectId, episode);
 
         await updateTaskStatus(taskId, "running", 25, "步骤 3/7: 生成角色参考图");
         await generateCharacterImages(projectId);

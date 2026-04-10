@@ -38,6 +38,7 @@ export async function POST(request: Request) {
         idea: payload.idea ? (payload.idea as string).slice(0, 100) + "..." : null,
         style: payload.style || null,
         force: payload.force || false,
+        episode: payload.episode || 1,
       },
     });
 
@@ -74,6 +75,8 @@ export async function POST(request: Request) {
           shotId: payload.shotId as string | undefined,
           idea: payload.idea as string | undefined,
           style: payload.style as string | undefined,
+          force: payload.force as boolean | undefined,
+          episode: payload.episode as number | undefined,
         }
       );
       console.log(`[Task Processor] Task completed successfully: taskId=${task.id}, duration=${Date.now() - startTime}ms`);

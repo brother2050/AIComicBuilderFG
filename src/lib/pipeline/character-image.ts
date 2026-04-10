@@ -126,8 +126,10 @@ export async function generateCharacterImages(
   const useComfyUI = getImageProviderType() === "comfyui";
 
   for (const char of projectCharacters) {
-    if (!char.description) {
-      console.warn(`[Pipeline] Character ${char.name} has no description, skipping`);
+    // 优先使用视觉描述，如果没有则使用剧情描述
+    const visualDesc = char.visualDescription || char.description;
+    if (!visualDesc) {
+      console.warn(`[Pipeline] Character ${char.name} has no visual description, skipping`);
       continue;
     }
 
@@ -142,7 +144,7 @@ export async function generateCharacterImages(
     const prompt = characterFourViewPrompt
       .replace("{STYLE}", project.style || "anime")
       .replace("{CHARACTER_NAME}", char.name)
-      .replace("{DESCRIPTION}", char.description);
+      .replace("{DESCRIPTION}", visualDesc);
 
     // 图片生成参数（只包含 ImageOptions 定义的字段）
     const imageParams = {

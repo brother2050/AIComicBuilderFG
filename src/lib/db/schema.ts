@@ -36,11 +36,17 @@ export const characters = sqliteTable("characters", {
     .notNull()
     .references(() => projects.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
+  // 剧情描述：角色的背景故事、性格特点、在剧情中的作用
   description: text("description").default(""),
+  // 视觉描述：专业的外貌描述，用于生成角色图像
+  visualDescription: text("visual_description").default(""),
+  // 简短视觉提示词（用于快速参考）
   visualHint: text("visual_hint").default(""),
   referenceImage: text("reference_image"),
   comfyuiPromptId: text("comfyui_prompt_id"), // 用于恢复超时任务
   scope: text("scope", { enum: ["main", "guest"] }).notNull().default("main"),
+  // 所属集数（可选，默认第1集）
+  episode: integer("episode").default(1),
 });
 
 // 分镜表

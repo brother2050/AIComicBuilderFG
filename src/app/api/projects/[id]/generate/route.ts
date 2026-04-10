@@ -39,15 +39,16 @@ export async function POST(
 
   try {
     const body = await request.json();
-    const { action, shotId, idea, style, force } = body as {
+    const { action, shotId, idea, style, force, episode } = body as {
       action: GenerateAction;
       shotId?: string;
       idea?: string;
       style?: string;
       force?: boolean;
+      episode?: number;
     };
 
-    console.log(`[API Generate] Request received: projectId=${projectId}, action=${action}, shotId=${shotId || 'none'}, style=${style || 'none'}, force=${force || false}`);
+    console.log(`[API Generate] Request received: projectId=${projectId}, action=${action}, shotId=${shotId || 'none'}, episode=${episode || 1}, style=${style || 'none'}, force=${force || false}`);
 
     if (!action) {
       console.warn(`[API Generate] Missing action parameter`);
@@ -104,9 +105,10 @@ export async function POST(
       idea,
       style,
       force,
+      episode,
     });
 
-    console.log(`[API Generate] Task created successfully: taskId=${taskId}, action=${action}, shotId=${shotId || 'none'}, force=${force || false}`);
+    console.log(`[API Generate] Task created successfully: taskId=${taskId}, action=${action}, episode=${episode || 1}, shotId=${shotId || 'none'}, force=${force || false}`);
 
     // 返回任务ID，前端可通过轮询获取进度
     return NextResponse.json({

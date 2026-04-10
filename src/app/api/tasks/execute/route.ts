@@ -10,7 +10,7 @@ import { executeTask } from "@/lib/pipeline/task-executor";
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { taskId, projectId, action, shotId, idea, style, force } = body;
+    const { taskId, projectId, action, shotId, idea, style, force, episode } = body;
 
     if (!taskId || !projectId || !action) {
       return NextResponse.json(
@@ -36,7 +36,7 @@ export async function POST(request: Request) {
 
     // 在后台异步执行任务
     // 注意：在生产环境中应该使用队列系统如 BullMQ
-    executeTask(taskId, projectId, action, { shotId, idea, style, force }).catch(err => {
+    executeTask(taskId, projectId, action, { shotId, idea, style, force, episode }).catch(err => {
       console.error(`[Task] Background execution failed:`, err);
     });
 

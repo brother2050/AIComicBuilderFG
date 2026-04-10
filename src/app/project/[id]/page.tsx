@@ -803,7 +803,7 @@ export default function ProjectPage() {
     }
   };
 
-  const startGenerate = async (action: string, options?: { idea?: string; style?: string; force?: boolean }) => {
+  const startGenerate = async (action: string, options?: { idea?: string; style?: string; force?: boolean; episode?: number }) => {
     // script_generate 需要用户输入想法（如果没有提供 idea）
     if (action === "script_generate" && !options?.idea) {
       setShowIdeaDialog(true);
@@ -823,7 +823,7 @@ export default function ProjectPage() {
       const res = await fetch(`/api/projects/${projectId}/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, ...options }),
+        body: JSON.stringify({ action, ...options, episode: options?.episode || activeEpisode }),
       });
       const result = await res.json();
 
@@ -841,7 +841,7 @@ export default function ProjectPage() {
           taskId: result.taskId,
           projectId,
           action,
-          ...options,
+          episode: options?.episode || activeEpisode,
         }),
       });
 
@@ -1909,9 +1909,27 @@ export default function ProjectPage() {
                         <Button
                           size="sm"
                           variant="ghost"
-                          onClick={() => {
-                            // TODO: 调用API添加新集
-                            alert("添加新集功能开发中");
+                          onClick={async () => {
+                            try {
+                              const res = await fetch(`/api/projects/${projectId}/episodes`, {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ action: "add" }),
+                              });
+                              const data = await res.json();
+                              if (data.success) {
+                                // 更新项目状态
+                                setProject({ ...project, totalEpisodes: data.totalEpisodes });
+                                // 切换到新集
+                                setActiveEpisode(data.totalEpisodes);
+                                alert(`已添加第 ${data.totalEpisodes} 集`);
+                              } else {
+                                alert(data.error || "添加失败");
+                              }
+                            } catch (error) {
+                              console.error("添加新集失败:", error);
+                              alert("添加新集失败");
+                            }
                           }}
                         >
                           <Plus className="w-4 h-4 mr-1" />
@@ -2087,15 +2105,24 @@ export default function ProjectPage() {
                                 {char.scope === "main" ? "主角" : "配角"}
                               </Badge>
                               {char.visualHint && (
-                                <p className="text-sm text-gray-500 mt-1">
-                                  {char.visualHint}
+                                <p className="text-xs text-blue-500 mt-1 flex items-center gap-1">
+                                  <span className="font-medium">视觉:</span> {char.visualHint}
                                 </p>
                               )}
                             </div>
                           </div>
+                          {/* 剧情描述 */}
                           {char.description && (
-                            <p className="text-sm text-gray-600 mt-3 line-clamp-3">
-                              {char.description}
+                            <div className="mt-2 pt-2 border-t border-gray-100">
+                              <p className="text-xs text-gray-500 line-clamp-2">
+                                <span className="font-medium text-gray-600">剧情:</span> {char.description}
+                              </p>
+                            </div>
+                          )}
+                          {/* 视觉描述 */}
+                          {(char as any).visualDescription && (
+                            <p className="text-xs text-gray-400 line-clamp-2 mt-1">
+                              <span className="font-medium">视觉:</span> {(char as any).visualDescription}
                             </p>
                           )}
                         </CardContent>
@@ -2629,7 +2656,7 @@ export default function ProjectPage() {
       const res = await fetch(`/api/projects/${projectId}/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, shotId }),
+        body: JSON.stringify({ action, shotId, episode: activeEpisode }),
       });
       const result = await res.json();
 
@@ -2646,8 +2673,7 @@ export default function ProjectPage() {
           taskId: result.taskId,
           projectId,
           action,
-          shotId,
-          force,
+          episode: activeEpisode,
         }),
       });
 
