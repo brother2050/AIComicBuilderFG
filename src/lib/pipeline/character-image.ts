@@ -6,13 +6,15 @@ import { db, characters, projects } from "@/lib/db";
 import { eq } from "drizzle-orm";
 import { characterFourViewPrompt } from "@/lib/prompts/frame-generate";
 import { loadProjectWorkflow, getWorkflowDefaults } from "@/lib/ai/providers/workflow-template";
+import { isTaskCancelled } from "@/lib/tasks";
 
 export async function generateCharacterImages(
   projectId: string,
   targetCharId?: string,
-  options?: { force?: boolean }
+  options?: { force?: boolean; taskId?: string }
 ): Promise<void> {
   const force = options?.force ?? false;
+  const taskId = options?.taskId;
   const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
   if (!project) throw new Error("Project not found");
 
@@ -88,7 +90,14 @@ export async function generateCharacterImages(
     for (const task of pendingTasks) {
       try {
         console.log(`[Pipeline] Waiting for character task: ${task.promptId}`);
-        const imagePath = await comfyProvider.pollImageUntilComplete(task.promptId, { projectId });
+
+        // 检查取消的回调
+        const checkCancelled = taskId ? async () => isTaskCancelled(taskId) : undefined;
+
+        const imagePath = await comfyProvider.pollImageUntilComplete(task.promptId, {
+          projectId,
+          checkCancelled
+        });
         await db.update(characters)
           .set({ referenceImage: imagePath, comfyuiPromptId: null })
           .where(eq(characters.id, task.charId));

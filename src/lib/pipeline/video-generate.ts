@@ -8,13 +8,15 @@ import { getComfyUIVideoProvider } from "@/lib/ai";
 import { db, shots, dialogues, characters, projects } from "@/lib/db";
 import { eq } from "drizzle-orm";
 import { buildVideoPrompt } from "@/lib/prompts/video-generate";
+import { isTaskCancelled } from "@/lib/tasks";
 
 export async function generateVideos(
   projectId: string,
   targetShotId?: string,
-  options?: { force?: boolean }
+  options?: { force?: boolean; taskId?: string }
 ): Promise<void> {
   const force = options?.force ?? false;
+  const taskId = options?.taskId;
   console.log(`[Pipeline] Starting video generation for project: ${projectId}, force: ${force}`);
 
   const project = await db.query.projects.findFirst({
@@ -127,6 +129,7 @@ export async function generateVideos(
   }
 
   // 异步轮询所有视频任务
+  const checkCancelled = taskId ? async () => isTaskCancelled(taskId) : undefined;
   if (videoProvider.pollVideoUntilComplete) {
     for (const task of pendingVideos) {
       const shot = projectShots.find(s => s.id === task.shotId);
@@ -143,7 +146,8 @@ export async function generateVideos(
             duration: shot.duration || 5,
             ratio: project.aspectRatio || "16:9",
             projectId,
-          }
+          },
+          { checkCancelled }
         );
 
         await db.update(shots)

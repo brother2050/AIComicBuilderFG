@@ -7,13 +7,15 @@ import { db, shots, characters, projects } from "@/lib/db";
 import { eq } from "drizzle-orm";
 import { buildFirstFramePrompt, buildLastFramePrompt } from "@/lib/prompts/frame-generate";
 import { loadProjectWorkflow, getWorkflowDefaults } from "@/lib/ai/providers/workflow-template";
+import { isTaskCancelled } from "@/lib/tasks";
 
 export async function generateFrames(
   projectId: string,
   targetShotId?: string,
-  options?: { force?: boolean }
+  options?: { force?: boolean; taskId?: string }
 ): Promise<void> {
   const force = options?.force ?? false;
+  const taskId = options?.taskId;
   const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
   if (!project) throw new Error("Project not found");
 
@@ -117,10 +119,11 @@ export async function generateFrames(
   }
 
   // 等待首帧完成并处理尾帧
+  const checkCancelled = taskId ? async () => isTaskCancelled(taskId) : undefined;
   if (useComfyUI && comfyProvider.pollImageUntilComplete) {
     for (const task of pendingFirstFrames) {
       try {
-        const imagePath = await comfyProvider.pollImageUntilComplete(task.promptId, { projectId });
+        const imagePath = await comfyProvider.pollImageUntilComplete(task.promptId, { projectId, checkCancelled });
         await db.update(shots).set({ firstFrame: imagePath, firstFramePromptId: null }).where(eq(shots.id, task.shotId));
         console.log(`[Pipeline] First frame saved: ${imagePath}`);
       } catch (e) {
@@ -165,7 +168,7 @@ export async function generateFrames(
   if (useComfyUI && comfyProvider.pollImageUntilComplete) {
     for (const task of pendingLastFrames) {
       try {
-        const imagePath = await comfyProvider.pollImageUntilComplete(task.promptId, { projectId });
+        const imagePath = await comfyProvider.pollImageUntilComplete(task.promptId, { projectId, checkCancelled });
         await db.update(shots).set({ lastFrame: imagePath, lastFramePromptId: null, status: "completed" }).where(eq(shots.id, task.shotId));
         console.log(`[Pipeline] Last frame saved: ${imagePath}`);
       } catch (e) {

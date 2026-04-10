@@ -109,7 +109,7 @@ export async function executeTask(
 
       case "character_image": {
         await updateTaskStatus(taskId, "running", 30, "正在生成角色参考图...");
-        await generateCharacterImages(projectId, shotId, { force });
+        await generateCharacterImages(projectId, shotId, { force, taskId });
         await updateTaskStatus(taskId, "completed", 100, "角色图生成完成");
         break;
       }
@@ -155,7 +155,7 @@ export async function executeTask(
             i
           );
 
-          await generateFrames(projectId, shot.id, { force });
+          await generateFrames(projectId, shot.id, { force, taskId });
         }
 
         await updateTaskStatus(taskId, "completed", 100, "所有帧图生成完成");
@@ -194,7 +194,7 @@ export async function executeTask(
             i
           );
 
-          await generateVideos(projectId, shot.id, { force });
+          await generateVideos(projectId, shot.id, { force, taskId });
         }
 
         await updateTaskStatus(taskId, "completed", 100, "所有视频生成完成");

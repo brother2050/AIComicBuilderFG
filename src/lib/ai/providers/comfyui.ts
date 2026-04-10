@@ -293,10 +293,22 @@ export class ComfyUIImageProvider implements AIProvider {
    */
   async pollImageUntilComplete(
     promptId: string,
-    options?: ImageOptions & { onProgress?: (value: number) => void },
+    options?: ImageOptions & {
+      onProgress?: (value: number) => void;
+      checkCancelled?: () => Promise<boolean>; // 检查是否取消
+    },
     maxRetries = 120
   ): Promise<string> {
     for (let i = 0; i < maxRetries; i++) {
+      // 检查是否被取消
+      if (options?.checkCancelled) {
+        const cancelled = await options.checkCancelled();
+        if (cancelled) {
+          console.log(`[ComfyUI] Polling cancelled for promptId: ${promptId}`);
+          throw new Error("Task cancelled");
+        }
+      }
+
       const status = await this.checkImageStatus(promptId, options);
 
       if (status.status === "completed" && status.filePath) {
@@ -570,10 +582,22 @@ export class ComfyUIVideoProvider implements VideoProvider {
   async pollVideoUntilComplete(
     promptId: string,
     params: VideoGenerateParams,
-    options?: { onProgress?: (value: number) => void },
+    options?: {
+      onProgress?: (value: number) => void;
+      checkCancelled?: () => Promise<boolean>;
+    },
     maxRetries = 600
   ): Promise<string> {
     for (let i = 0; i < maxRetries; i++) {
+      // 检查是否被取消
+      if (options?.checkCancelled) {
+        const cancelled = await options.checkCancelled();
+        if (cancelled) {
+          console.log(`[ComfyUI] Video polling cancelled for promptId: ${promptId}`);
+          throw new Error("Task cancelled");
+        }
+      }
+
       const status = await this.checkVideoStatus(promptId);
 
       if (status.status === "completed") {
