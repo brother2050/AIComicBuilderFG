@@ -1,31 +1,52 @@
+/**
+ * ComfyUI 图片/视频生成 Provider
+ */
 import type { AIProvider, VideoProvider, ImageOptions, VideoGenerateParams, VideoGenerateResult } from "../types";
 import { ulid } from "ulid";
 import * as fs from "fs";
 import * as path from "path";
-import { loadWorkflowTemplate, applyWorkflowParams, type WorkflowParams } from "./workflow-template";
+import { loadWorkflowTemplate, applyWorkflowParams, loadProjectWorkflow, type WorkflowParams } from "./workflow-template";
 import { getProjectFramesDir, getProjectVideosDir } from "@/lib/fs";
 
-export interface ComfyUIProviderConfig {
+// ============ 类型定义 ============
+
+export interface ComfyUIConfig {
   apiUrl?: string;
-  workflowName?: string;
+  defaultWorkflow?: string;
+  videoWorkflow?: string;
+  videoApiUrl?: string;
   uploadDir?: string;
-  defaultWorkflow?: string; // 默认工作流模板文件名
-  videoWorkflowName?: string;
-  videoApiUrl?: string; // 独立的视频生成 API URL
 }
 
-type ComfyUITaskStatus = "pending" | "processing" | "completed" | "failed";
+type TaskStatus = "pending" | "processing" | "completed" | "failed";
 
-interface ComfyUIImageTaskResult {
+interface TaskResult {
   taskId: string;
-  status: ComfyUITaskStatus;
+  status: TaskStatus;
   filePath?: string;
   error?: string;
 }
 
-/**
- * 规范化 URL 确保格式正确
- */
+export interface ProgressCallback {
+  onProgress?: (value: number) => void;
+  onNodeExecuting?: (nodeId: string | null) => void;
+  onComplete?: () => void;
+}
+
+// ============ 异步任务接口 ============
+
+export interface ImageSubmitResult {
+  promptId: string;
+}
+
+export interface ImageStatusResult {
+  status: "pending" | "processing" | "completed" | "failed";
+  filePath?: string;
+  error?: string;
+}
+
+// ============ 工具函数 ============
+
 function normalizeUrl(url: string): string {
   let normalized = url.trim();
   if (!normalized.startsWith("http://") && !normalized.startsWith("https://")) {
@@ -34,872 +55,638 @@ function normalizeUrl(url: string): string {
   return normalized.endsWith("/") ? normalized : normalized + "/";
 }
 
-/**
- * 获取图片的 MIME 类型
- */
-function getImageMimeType(filePath: string): string {
-  const ext = filePath.toLowerCase().split(".").pop();
-  switch (ext) {
-    case "png": return "image/png";
-    case "jpg":
-    case "jpeg": return "image/jpeg";
-    case "gif": return "image/gif";
-    case "webp": return "image/webp";
-    default: return "image/png";
-  }
+function generateClientId(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = Math.random() * 16 | 0;
+    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+  });
 }
 
-/**
- * 从本地文件或 URL 读取图片为 base64
- */
 async function readImageAsBase64(imagePath: string): Promise<string> {
   if (imagePath.startsWith("http://") || imagePath.startsWith("https://")) {
     const res = await fetch(imagePath);
-    if (!res.ok) {
-      throw new Error(`Failed to fetch image: ${imagePath} (${res.status})`);
-    }
-    const buf = Buffer.from(await res.arrayBuffer());
-    return buf.toString("base64");
+    if (!res.ok) throw new Error(`Failed to fetch: ${imagePath}`);
+    return Buffer.from(await res.arrayBuffer()).toString("base64");
   }
-  const data = fs.readFileSync(imagePath);
-  return data.toString("base64");
+  return fs.readFileSync(imagePath).toString("base64");
 }
 
-/**
- * ComfyUI API 客户端
- */
-class ComfyUIAPIClient {
-  private baseUrl: string;
+// ============ API 客户端 ============
 
-  constructor(baseUrl: string) {
+class ComfyUIAPIClient {
+  constructor(private baseUrl: string) {
     this.baseUrl = normalizeUrl(baseUrl);
   }
 
   async queuePrompt(prompt: Record<string, unknown>): Promise<{ prompt_id: string }> {
-    const nodeCount = Object.keys(prompt).filter(k => !k.startsWith('_')).length;
-    console.log(`[ComfyUI API] POST /api/prompt - nodes=${nodeCount}`);
-    
     const response = await fetch(`${this.baseUrl}api/prompt`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt }),
     });
-
-    if (!response.ok) {
-      const error = await response.text();
-      console.error(`[ComfyUI API] POST /api/prompt failed: status=${response.status}, error=${error}`);
-      throw new Error(`ComfyUI API 错误: ${response.status} - ${error}`);
-    }
-
-    const result = response.json();
-    console.log(`[ComfyUI API] POST /api/prompt success: prompt_id=${(await result).prompt_id}`);
-    return result;
+    if (!response.ok) throw new Error(`Queue failed: ${response.status}`);
+    return response.json();
   }
 
   async getHistory(promptId: string): Promise<Record<string, unknown>> {
-    console.log(`[ComfyUI API] GET /api/history/${promptId}`);
     const response = await fetch(`${this.baseUrl}api/history/${promptId}`);
-    if (!response.ok) {
-      console.error(`[ComfyUI API] GET /api/history/${promptId} failed: status=${response.status}`);
-      throw new Error(`ComfyUI History API 错误: ${response.status}`);
-    }
+    if (!response.ok) throw new Error(`History failed: ${response.status}`);
     return response.json();
   }
 
   async getQueueStatus(): Promise<{ queue_running: unknown[]; queue_pending: unknown[] }> {
-    const response = await fetch(`${this.baseUrl}api/queue`, { method: "GET" });
-    if (!response.ok) {
-      console.error(`[ComfyUI API] GET /api/queue failed: status=${response.status}`);
-      throw new Error(`ComfyUI Queue API 错误: ${response.status}`);
-    }
-    const result = await response.json();
-    console.log(`[ComfyUI API] Queue status: running=${result.queue_running?.length || 0}, pending=${result.queue_pending?.length || 0}`);
-    return result;
+    const response = await fetch(`${this.baseUrl}api/queue`);
+    if (!response.ok) throw new Error(`Queue status failed: ${response.status}`);
+    return response.json();
   }
 
   async uploadImage(imageData: Buffer, filename: string): Promise<{ name: string }> {
-    console.log(`[ComfyUI API] POST /api/upload/image - filename=${filename}, size=${imageData.length} bytes`);
-    
     const formData = new FormData();
-    const blob = new Blob([new Uint8Array(imageData)]);
-    formData.append("image", blob, filename);
+    formData.append("image", new Blob([new Uint8Array(imageData)]), filename);
     formData.append("subfolder", "input");
-    formData.append("type", "input");
 
-    const response = await fetch(`${this.baseUrl}api/upload/image`, {
-      method: "POST",
-      body: formData,
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      console.error(`[ComfyUI API] POST /api/upload/image failed: status=${response.status}, error=${error}`);
-      throw new Error(`ComfyUI 上传图片失败: ${response.status} - ${error}`);
-    }
-
-    const result = await response.json();
-    console.log(`[ComfyUI API] POST /api/upload/image success: name=${result.name}`);
-    return result;
-  }
-
-  getImageUrl(filename: string, subfolder: string = "", folderType: string = "output"): string {
-    const params = new URLSearchParams({ filename, subfolder, folder_type: folderType });
-    return `${this.baseUrl}api/view?${params}`;
+    const response = await fetch(`${this.baseUrl}api/upload/image`, { method: "POST", body: formData });
+    if (!response.ok) throw new Error(`Upload failed: ${response.status}`);
+    return response.json();
   }
 
   async downloadImage(filename: string, subfolder: string = ""): Promise<Buffer> {
-    const url = this.getImageUrl(filename, subfolder);
-    console.log(`[ComfyUI API] GET /api/view - filename=${filename}, subfolder=${subfolder}`);
-    const response = await fetch(url);
-    if (!response.ok) {
-      console.error(`[ComfyUI API] GET /api/view failed: status=${response.status}, filename=${filename}`);
-      throw new Error(`下载图片失败: ${response.status}`);
-    }
-    const buffer = Buffer.from(await response.arrayBuffer());
-    console.log(`[ComfyUI API] Downloaded image: ${filename}, size=${buffer.length} bytes`);
-    return buffer;
+    const params = new URLSearchParams({ filename, subfolder, folder_type: "output" });
+    const response = await fetch(`${this.baseUrl}api/view?${params}`);
+    if (!response.ok) throw new Error(`Download failed: ${response.status}`);
+    return Buffer.from(await response.arrayBuffer());
+  }
+
+  getImageUrl(filename: string, subfolder: string = "", folderType = "output"): string {
+    const params = new URLSearchParams({ filename, subfolder, folder_type: folderType });
+    return `${this.baseUrl}api/view?${params}`;
   }
 }
 
-/**
- * ComfyUI 视频生成专用客户端（包含上传目录）
- */
-class ComfyUIVideoClient extends ComfyUIAPIClient {
-  private uploadDir: string;
+// ============ 图片生成 Provider ============
 
-  constructor(baseUrl: string, uploadDir: string) {
-    super(baseUrl);
-    this.uploadDir = uploadDir;
-  }
-
-  getUploadDir(): string {
-    return this.uploadDir;
-  }
-}
-
-/**
- * ComfyUI 图片生成 Provider
- * 使用ComfyUI原生REST API进行图像生成
- */
 export class ComfyUIImageProvider implements AIProvider {
-  private apiUrl: string;
-  private uploadDir: string;
-  private defaultWorkflow: string;
-  private client: ComfyUIAPIClient | null = null;
+  private client: ComfyUIAPIClient;
 
-  constructor(config?: ComfyUIProviderConfig) {
-    this.apiUrl = config?.apiUrl || process.env.COMFYUI_API_URL || "";
-    this.uploadDir = config?.uploadDir || process.env.UPLOAD_DIR || "./uploads";
-    // 默认使用 z_image_turbo 工作流
-    this.defaultWorkflow = config?.defaultWorkflow || "image_z_image_turbo.json";
+  constructor(
+    private apiUrl = process.env.COMFYUI_API_URL || "",
+    private uploadDir = process.env.UPLOAD_DIR || "./uploads",
+    private defaultWorkflow = "image_z_image_turbo.json"
+  ) {
+    this.client = new ComfyUIAPIClient(this.apiUrl);
   }
 
-  private getClient(): ComfyUIAPIClient {
-    if (!this.client) {
-      this.client = new ComfyUIAPIClient(this.apiUrl);
-    }
-    return this.client;
+  async generateText(_prompt: string): Promise<string> {
+    throw new Error("ComfyUI 不支持文本生成");
   }
 
-  getApiUrl(): string {
-    return this.apiUrl;
-  }
-
-  getUploadDir(): string {
-    return this.uploadDir;
-  }
-
-  getDefaultWorkflow(): string {
-    return this.defaultWorkflow;
-  }
-
-  /**
-   * 不支持文本生成
-   */
-  async generateText(_prompt: string, _options?: unknown): Promise<string> {
-    throw new Error("ComfyUI Provider 不支持文本生成");
-  }
-
-  /**
-   * 生成图片 - 使用ComfyUI API
-   * @param prompt 提示词
-   * @param options 图片选项
-   * @param onPromptIdSubmit 提交后回调，用于保存 promptId
-   */
   async generateImage(
     prompt: string,
     options?: ImageOptions,
-    onPromptIdSubmit?: (promptId: string) => void | Promise<void>
+    onPromptIdSubmit?: (id: string) => void | Promise<void>
   ): Promise<string> {
-    console.log(`[ComfyUI Image] Request params:`, {
-      prompt: prompt.slice(0, 200) + (prompt.length > 200 ? "..." : ""),
-      promptLength: prompt.length,
-      size: options?.size || "1024x1024",
-      steps: options?.steps || 8,
-      hasCustomWorkflow: !!options?.customWorkflow,
-      hasReferenceImage: !!options?.referenceImage,
-      workflowFile: options?.workflowFile || this.defaultWorkflow,
-    });
-
-    const client = this.getClient();
-    const width = options?.size ? parseInt(options.size.split('x')[0]) : 1024;
-    const height = options?.size ? parseInt(options.size.split('x')[1]) : 1024;
-    const steps = options?.steps || 8;
-
-    try {
-      // 如果有自定义工作流 JSON，直接使用
-      if (options?.customWorkflow) {
-        console.log(`[ComfyUI Image] Using custom workflow JSON`);
-        return this.generateImageWithWorkflow(prompt, options.customWorkflow, options, onPromptIdSubmit);
-      }
-
-      // 加载工作流模板
-      const workflowFile = options?.workflowFile || this.defaultWorkflow;
-      let templateWorkflow = loadWorkflowTemplate(workflowFile);
-      
-      if (!templateWorkflow) {
-        throw new Error(`Failed to load workflow template: ${workflowFile}`);
-      }
-      
-      // 检测是否是子图格式（包含 definitions.subgraphs）
-      const templateDefinitions = templateWorkflow.definitions as Record<string, unknown> | undefined;
-      if (templateDefinitions?.subgraphs) {
-        console.warn(`[ComfyUI Image] Template ${workflowFile} uses subgraph format, trying API version...`);
-        const apiVersion = workflowFile.replace('.json', '_api.json');
-        const apiTemplate = loadWorkflowTemplate(apiVersion);
-        if (apiTemplate) {
-          templateWorkflow = apiTemplate;
-          console.log(`[ComfyUI Image] Using API workflow template: ${apiVersion}`);
-        } else {
-          // 子图格式且没有 API 版本，使用默认的 standard_sd15
-          console.warn(`[ComfyUI Image] No API version found, falling back to standard_sd15.json`);
-          const fallback = loadWorkflowTemplate('standard_sd15.json');
-          if (fallback) {
-            templateWorkflow = fallback;
-          }
-        }
-      }
-      
-      console.log(`[ComfyUI Image] Loaded workflow template: ${workflowFile}`);
-
-      // 构建参数
-      const params: WorkflowParams = {
-        prompt,
-        negative_prompt: options?.quality === "hd" 
-          ? "low quality, blurry, deformed, bad anatomy" 
-          : "low quality, blurry, deformed, bad anatomy, watermark, text, logo",
-        width,
-        height,
-        steps,
-        cfg: options?.cfg ?? 8.0,
-        denoise: options?.denoise ?? 1.0,
-        seed: options?.seed ?? Math.floor(Math.random() * 1000000000),
-        // 模型参数（如果不指定则使用模板默认值）
-        model: options?.model,
-        vae: options?.vae,
-        clip: options?.clip,
-        lora: options?.lora,
-        lora_strength_model: options?.lora_strength_model ?? 1.0,
-        lora_strength_clip: options?.lora_strength_clip ?? 1.0,
-      };
-
-      console.log(`[ComfyUI Image] Params for workflow:`, {
-        ...params,
-        prompt: (params.prompt || '').slice(0, 100) + "...",
-        negative_prompt: (params.negative_prompt || '').slice(0, 100) + "...",
-        model: params.model || 'template default',
-        vae: params.vae || 'template default',
-        clip: params.clip || 'template default',
-        lora: params.lora || 'template default',
-        lora_strength_model: params.lora_strength_model,
-        lora_strength_clip: params.lora_strength_clip,
-      });
-
-      // 应用参数到工作流
-      const workflow = applyWorkflowParams(templateWorkflow, params);
-      console.log(`[ComfyUI Image] Workflow prepared, applying params...`);
-
-      // 记录关键节点的输入值，用于调试
-      const keyNodes = Object.entries(workflow).filter(([id, node]) => {
-        const classType = (node as Record<string, unknown>).class_type as string;
-        return ['UNETLoader', 'VAELoader', 'CLIPLoader', 'LoraLoader', 'KSampler'].includes(classType);
-      });
-      console.log(`[ComfyUI Image] Key nodes inputs:`, 
-        keyNodes.map(([id, node]) => ({
-          node: id,
-          class_type: (node as Record<string, unknown>).class_type,
-          inputs: (node as Record<string, unknown>).inputs,
-        }))
-      );
-
-      // 提交任务
-      const startTime = Date.now();
-      const { prompt_id } = await client.queuePrompt(workflow);
-      console.log(`[ComfyUI Image] Prompt queued, ID: ${prompt_id}, elapsed: ${Date.now() - startTime}ms`);
-
-      // 提交后立即回调，保存 promptId 用于恢复
-      if (onPromptIdSubmit) {
-        await onPromptIdSubmit(prompt_id);
-      }
-
-      // 轮询等待完成
-      console.log(`[ComfyUI Image] Waiting for completion...`);
-      const result = await this.waitForCompletion(client, prompt_id, options);
-      
-      if (result.status === "completed" && result.filePath) {
-        console.log(`[ComfyUI Image] Completed:`, {
-          filePath: result.filePath,
-          totalTime: `${Date.now() - startTime}ms`,
-        });
-        return result.filePath;
-      }
-
-      throw new Error(result.error || "ComfyUI 图片生成失败");
-    } catch (error) {
-      console.error(`[ComfyUI Image] Failed:`, error);
-      throw new Error(`ComfyUI 图片生成失败: ${error instanceof Error ? error.message : "未知错误"}`);
+    // 加载工作流
+    let workflow = options?.customWorkflow || loadProjectWorkflow(options?.workflowFile ? JSON.stringify({ _workflowFile: options.workflowFile }) : null);
+    if (!workflow) {
+      workflow = loadWorkflowTemplate(this.defaultWorkflow);
     }
+    if (!workflow) {
+      throw new Error(`Failed to load workflow: ${this.defaultWorkflow}`);
+    }
+
+    // 构建参数
+    const params: WorkflowParams = {
+      prompt,
+      negative_prompt: options?.quality === "hd" ? "low quality, blurry, deformed" : "low quality, blurry, watermark, text",
+      width: options?.size ? parseInt(options.size.split('x')[0]) : 1024,
+      height: options?.size ? parseInt(options.size.split('x')[1]) : 1024,
+      steps: options?.steps || 8,
+      cfg: options?.cfg ?? 8.0,
+      denoise: options?.denoise ?? 1.0,
+      seed: options?.seed ?? Math.floor(Math.random() * 1e9),
+      model: options?.model,
+      vae: options?.vae,
+      clip: options?.clip,
+    };
+
+    const apiWorkflow = applyWorkflowParams(workflow, params);
+    const { prompt_id } = await this.client.queuePrompt(apiWorkflow);
+
+    if (onPromptIdSubmit) await onPromptIdSubmit(prompt_id);
+
+    const result = await this.waitForCompletion(prompt_id, options);
+    if (result.status === "completed" && result.filePath) {
+      return result.filePath;
+    }
+    throw new Error(result.error || "Image generation failed");
   }
 
-  /**
-   * 使用自定义工作流生成图片
-   * @param prompt 提示词
-   * @param customWorkflow 自定义工作流 JSON
-   * @param options 图片选项
-   * @param onPromptIdSubmit 提交后回调
-   */
   async generateImageWithWorkflow(
     prompt: string,
-    customWorkflow: Record<string, unknown>,
+    workflow: Record<string, unknown>,
     options?: ImageOptions,
-    onPromptIdSubmit?: (promptId: string) => void | Promise<void>
+    onPromptIdSubmit?: (id: string) => void | Promise<void>
   ): Promise<string> {
-    console.log(`[ComfyUI Image] Generating image with custom workflow`);
+    const config = workflow._config as Record<string, unknown> | undefined;
+    const params: WorkflowParams = {
+      prompt,
+      negative_prompt: options?.quality === "hd" ? "low quality, blurry, deformed" : "low quality, blurry, watermark, text",
+      width: config?.width as number || (options?.size ? parseInt(options.size.split('x')[0]) : 1024),
+      height: config?.height as number || (options?.size ? parseInt(options.size.split('x')[1]) : 1024),
+      steps: config?.steps as number || options?.steps || 8,
+      seed: Math.floor(Math.random() * 1e9),
+      model: config?.model as string || '',
+    };
 
-    const client = this.getClient();
-    
-    // 优先使用 _config 中的配置（从模板加载时设置）
-    const config = customWorkflow._config as Record<string, unknown> | undefined;
-    const width = config?.width as number || options?.size ? parseInt(options!.size!.split('x')[0]) : 1024;
-    const height = config?.height as number || options?.size ? parseInt(options!.size!.split('x')[1]) : 1024;
-    const steps = config?.steps as number || options?.steps || 8;
-    const cfg = config?.cfg as number || 8.0;
-    const model = config?.model as string || '';
-    const denoise = config?.denoise as number || 1.0;
+    const apiWorkflow = applyWorkflowParams(workflow, params);
+    const { prompt_id } = await this.client.queuePrompt(apiWorkflow);
 
-    try {
-      // 应用工作流并替换占位符
-      const workflow = applyWorkflowParams(customWorkflow, {
-        prompt,
-        negative_prompt: options?.quality === "hd" 
-          ? "low quality, blurry, deformed, bad anatomy" 
-          : "low quality, blurry, deformed, bad anatomy, watermark, text, logo",
-        width,
-        height,
-        steps,
-        cfg,
-        seed: Math.floor(Math.random() * 1000000000),
-        model,
-        denoise,
-      });
+    if (onPromptIdSubmit) await onPromptIdSubmit(prompt_id);
 
-      // 提交任务
-      const { prompt_id } = await client.queuePrompt(workflow);
-      console.log(`[ComfyUI Image] Custom workflow prompt submitted, ID: ${prompt_id}`);
-
-      // 提交后立即回调，保存 promptId 用于恢复
-      if (onPromptIdSubmit) {
-        await onPromptIdSubmit(prompt_id);
-      }
-
-      // 轮询等待完成
-      const result = await this.waitForCompletion(client, prompt_id, options);
-      
-      if (result.status === "completed" && result.filePath) {
-        return result.filePath;
-      }
-
-      throw new Error(result.error || "ComfyUI 图片生成失败");
-    } catch (error) {
-      throw new Error(`ComfyUI 图片生成失败: ${error instanceof Error ? error.message : "未知错误"}`);
+    const result = await this.waitForCompletion(prompt_id, options);
+    if (result.status === "completed" && result.filePath) {
+      return result.filePath;
     }
+    throw new Error(result.error || "Image generation failed");
   }
 
-  private async waitForCompletion(
-    client: ComfyUIAPIClient, 
-    promptId: string, 
-    options?: ImageOptions,
-    maxRetries: number = 30,  // 30分钟超时
-    intervalMs: number = 60000
-  ): Promise<ComfyUIImageTaskResult> {
-    let retryCount = 0;
+  // ============ 异步模式方法 ============
 
-    while (retryCount < maxRetries) {
-      await new Promise(resolve => setTimeout(resolve, intervalMs));
-      retryCount++;
-
-      // 检查队列状态
-      const queueStatus = await client.getQueueStatus();
-      const isRunning = queueStatus.queue_running.some((p: unknown) => {
-        if (Array.isArray(p) && p.length >= 2) {
-          const promptData = p[1] as Record<string, unknown>;
-          return promptData?.prompt_id === promptId;
-        }
-        return false;
-      });
-
-      if (isRunning) {
-        console.log(`[ComfyUI Image] Task running, retry ${retryCount}/${maxRetries}`);
-        continue;
-      }
-
-      // 任务不在队列中，检查历史
-      const result = await this.checkHistoryForImage(client, promptId, options);
-      if (result) {
-        return result;
-      }
+  /**
+   * 异步提交图片生成任务（不等待完成）
+   */
+  async submitImage(
+    prompt: string,
+    options?: ImageOptions
+  ): Promise<ImageSubmitResult> {
+    let workflow = options?.customWorkflow || loadProjectWorkflow(options?.workflowFile ? JSON.stringify({ _workflowFile: options.workflowFile }) : null);
+    if (!workflow) {
+      workflow = loadWorkflowTemplate(this.defaultWorkflow);
+    }
+    if (!workflow) {
+      throw new Error(`Failed to load workflow: ${this.defaultWorkflow}`);
     }
 
-    // 超时后，最后一次尝试：直接从历史记录中查找（图片可能已生成）
-    console.log(`[ComfyUI Image] Timeout reached, final attempt to retrieve image...`);
-    const finalResult = await this.checkHistoryForImage(client, promptId, options);
-    if (finalResult) {
-      return finalResult;
-    }
+    const params: WorkflowParams = {
+      prompt,
+      negative_prompt: options?.quality === "hd" ? "low quality, blurry, deformed" : "low quality, blurry, watermark, text",
+      width: options?.size ? parseInt(options.size.split('x')[0]) : 1024,
+      height: options?.size ? parseInt(options.size.split('x')[1]) : 1024,
+      steps: options?.steps || 8,
+      cfg: options?.cfg ?? 8.0,
+      denoise: options?.denoise ?? 1.0,
+      seed: options?.seed ?? Math.floor(Math.random() * 1e9),
+      model: options?.model,
+      vae: options?.vae,
+      clip: options?.clip,
+    };
 
-    return { taskId: promptId, status: "failed", error: "任务超时" };
+    const apiWorkflow = applyWorkflowParams(workflow, params);
+    const { prompt_id } = await this.client.queuePrompt(apiWorkflow);
+    return { promptId: prompt_id };
   }
 
   /**
-   * 检查历史记录中是否有生成的图片
+   * 异步检查图片任务状态
    */
-  private async checkHistoryForImage(
-    client: ComfyUIAPIClient,
+  async checkImageStatus(
     promptId: string,
     options?: ImageOptions
-  ): Promise<ComfyUIImageTaskResult | null> {
+  ): Promise<ImageStatusResult> {
     try {
-      const history = await client.getHistory(promptId);
-      const promptHistory = history[promptId] as Record<string, unknown> | undefined;
+      const queue = await this.client.getQueueStatus();
+      const isRunning = queue.queue_running.some((p: unknown) =>
+        Array.isArray(p) && (p[1] as Record<string, unknown>)?.prompt_id === promptId
+      );
+      const isPending = queue.queue_pending.some((p: unknown) =>
+        Array.isArray(p) && (p[1] as Record<string, unknown>)?.prompt_id === promptId
+      );
 
-      if (promptHistory) {
-        const outputs = (promptHistory?.outputs || {}) as Record<string, unknown>;
+      if (isRunning) {
+        console.log(`[ComfyUI] Prompt ${promptId} is running`);
+        return { status: "processing" };
+      }
+      if (isPending) {
+        console.log(`[ComfyUI] Prompt ${promptId} is pending`);
+        return { status: "processing" };
+      }
 
-        // 查找输出图片
-        for (const nodeId of Object.keys(outputs)) {
-          const nodeOutput = outputs[nodeId] as Record<string, unknown>;
-          if (nodeOutput?.images) {
-            const images = nodeOutput.images as Array<{ filename: string; subfolder?: string }>;
-            if (images.length > 0) {
-              const imageInfo = images[0];
-              const imageBuffer = await client.downloadImage(
-                imageInfo.filename, 
-                imageInfo.subfolder || ""
-              );
+      // 任务不在队列中，尝试从 history 获取结果
+      console.log(`[ComfyUI] Prompt ${promptId} not in queue, checking history...`);
+      const result = await this.getImageResult(promptId, options);
+      if (result?.status === "completed" && result.filePath) {
+        return { status: "completed", filePath: result.filePath };
+      }
 
-              // 保存到本地 - 按项目分目录
-              const filename = `${ulid()}.png`;
-              let dir: string;
-              if (options?.projectId) {
-                dir = getProjectFramesDir(options.projectId);
-              } else {
-                dir = path.join(this.uploadDir, "frames");
-              }
-              fs.mkdirSync(dir, { recursive: true });
-              const filepath = path.join(dir, filename);
-              fs.writeFileSync(filepath, imageBuffer);
+      // 如果 history 为空，说明任务刚提交还没开始执行，或者还在处理中
+      // 返回 processing 让调用方继续轮询
+      console.log(`[ComfyUI] Prompt ${promptId} not completed yet, continuing...`);
+      return { status: "processing" };
+    } catch (e) {
+      console.error(`[ComfyUI] Check status error for ${promptId}:`, e);
+      return { status: "processing" };
+    }
+  }
 
-              console.log(`[ComfyUI Image] Saved to: ${filepath}`);
-              return { taskId: promptId, status: "completed", filePath: filepath };
-            }
+  /**
+   * 异步轮询直到图片生成完成
+   */
+  async pollImageUntilComplete(
+    promptId: string,
+    options?: ImageOptions & { onProgress?: (value: number) => void },
+    maxRetries = 120
+  ): Promise<string> {
+    for (let i = 0; i < maxRetries; i++) {
+      const status = await this.checkImageStatus(promptId, options);
+
+      if (status.status === "completed" && status.filePath) {
+        return status.filePath;
+      }
+
+      if (status.status === "failed") {
+        throw new Error(status.error || "Image generation failed");
+      }
+
+      options?.onProgress?.(Math.min((i / maxRetries) * 100, 95));
+      await new Promise(r => setTimeout(r, 15000));
+    }
+    throw new Error("Image generation timeout");
+  }
+
+  private async waitForCompletion(promptId: string, options?: ImageOptions & ProgressCallback): Promise<TaskResult> {
+    // 尝试 WebSocket
+    if (typeof window !== 'undefined' || process.env.COMFYUI_WEBSOCKET_ENABLED === 'true') {
+      try {
+        return await this.waitWithWebSocket(promptId, options);
+      } catch (e) {
+        console.warn(`[ComfyUI] WebSocket failed, using polling: ${e}`);
+      }
+    }
+    return this.pollCompletion(promptId, options);
+  }
+
+  private async waitWithWebSocket(promptId: string, options?: ImageOptions & ProgressCallback): Promise<TaskResult> {
+    return new Promise((resolve, reject) => {
+      const clientId = generateClientId();
+      const wsHost = this.apiUrl.replace(/^https?:\/\//, '');
+      const ws = new WebSocket(`ws://${wsHost}/ws?clientId=${clientId}`);
+      let isResolved = false;
+
+      const cleanup = () => { ws.close(); };
+      const resolveResult = (r: TaskResult) => { if (!isResolved) { isResolved = true; cleanup(); options?.onComplete?.(); resolve(r); } };
+      const rejectResult = (e: Error) => { if (!isResolved) { isResolved = true; cleanup(); reject(e); } };
+
+      ws.onopen = () => console.log(`[ComfyUI WS] Connected`);
+      ws.onerror = () => rejectResult(new Error('WebSocket error'));
+      ws.onclose = () => {
+        if (!isResolved) this.pollCompletion(promptId, options).then(resolveResult).catch(rejectResult);
+      };
+
+      ws.onmessage = async (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          const data = msg.data || {};
+
+          switch (msg.type) {
+            case 'executing':
+              options?.onNodeExecuting?.(data.node);
+              if (data.node === null) console.log(`[ComfyUI] Started`);
+              break;
+            case 'progress':
+              const progress = data.max > 0 ? (data.value / data.max) * 100 : 0;
+              options?.onProgress?.(progress);
+              break;
+            case 'execution_success':
+              options?.onProgress?.(100);
+              const result = await this.getImageResult(promptId, options);
+              resolveResult(result || { taskId: promptId, status: "failed", error: "No result found" });
+              break;
+            case 'execution_error':
+              resolveResult({ taskId: promptId, status: "failed", error: String(data.exception_message || 'Error') });
+              break;
           }
+        } catch (e) {
+          console.error(`[ComfyUI WS] Parse error:`, e);
         }
+      };
 
-        // 检查是否有错误
-        const status = promptHistory?.status as Record<string, unknown> | undefined;
-        if (status?.status === "error") {
-          return { taskId: promptId, status: "failed", error: "任务执行出错" };
+      setTimeout(() => {
+        if (!isResolved) {
+          console.log(`[ComfyUI] WebSocket timeout, switching to polling`);
+          cleanup();
+          this.pollCompletion(promptId, options).then(resolveResult).catch(rejectResult);
+        }
+      }, 60000);
+    });
+  }
+
+  private async pollCompletion(promptId: string, options?: ProgressCallback, maxRetries = 120): Promise<TaskResult> {
+    console.log(`[ComfyUI] Starting poll for promptId: ${promptId}, maxRetries: ${maxRetries}`);
+    for (let i = 0; i < maxRetries; i++) {
+      await new Promise(r => setTimeout(r, 15000));
+
+      const queue = await this.client.getQueueStatus();
+      const isRunning = queue.queue_running.some((p: unknown) =>
+        Array.isArray(p) && (p[1] as Record<string, unknown>)?.prompt_id === promptId
+      );
+
+      if (!isRunning) {
+        console.log(`[ComfyUI] Prompt ${promptId} not in running queue, checking history...`);
+        options?.onProgress?.(100);
+        const result = await this.getImageResult(promptId, options);
+        return result || { taskId: promptId, status: "failed", error: "Timeout" };
+      }
+      options?.onProgress?.(Math.min((i / maxRetries) * 80, 80));
+    }
+    return { taskId: promptId, status: "failed", error: "Timeout" };
+  }
+
+  private async getImageResult(promptId: string, options?: ImageOptions): Promise<TaskResult | null> {
+    try {
+      const history = await this.client.getHistory(promptId);
+      console.log(`[ComfyUI] History for ${promptId}:`, JSON.stringify(history).slice(0, 500));
+      const outputs = (history[promptId] as Record<string, unknown>)?.outputs as Record<string, unknown> | undefined;
+
+      if (!outputs || Object.keys(outputs).length === 0) {
+        console.log(`[ComfyUI] No outputs found for promptId: ${promptId}`);
+        return null;
+      }
+
+      for (const nodeId of Object.keys(outputs || {})) {
+        const output = outputs![nodeId] as Record<string, unknown>;
+        if (output?.images) {
+          const images = output.images as Array<{ filename: string; subfolder?: string }>;
+          const buffer = await this.client.downloadImage(images[0].filename, images[0].subfolder || "");
+
+          const filename = `${ulid()}.png`;
+          const dir = options?.projectId ? getProjectFramesDir(options.projectId) : path.join(this.uploadDir, "frames");
+          fs.mkdirSync(dir, { recursive: true });
+          const filepath = path.join(dir, filename);
+          fs.writeFileSync(filepath, buffer);
+
+          return { taskId: promptId, status: "completed", filePath: filepath };
         }
       }
     } catch (e) {
-      console.warn(`[ComfyUI Image] History API error: ${e instanceof Error ? e.message : 'unknown'}`);
+      console.warn(`[ComfyUI] History error: ${e}`);
     }
     return null;
   }
 }
 
-/**
- * ComfyUI 视频生成 Provider
- */
+// ============ 视频生成 Provider ============
+
 export class ComfyUIVideoProvider implements VideoProvider {
-  private apiUrl: string;
-  private uploadDir: string;
-  private defaultVideoWorkflow: string;
-  private client: ComfyUIVideoClient | null = null;
+  private client: ComfyUIAPIClient;
 
-  constructor(config?: ComfyUIProviderConfig) {
-    // 优先使用独立的视频 API URL，否则回退到通用 COMFYUI_API_URL
-    this.apiUrl = config?.videoApiUrl || process.env.COMFYUI_VIDEO_API_URL || process.env.COMFYUI_API_URL || "";
-    this.uploadDir = config?.uploadDir || process.env.UPLOAD_DIR || "./uploads";
-    this.defaultVideoWorkflow = config?.videoWorkflowName || "video_wan22_i2v.json";
+  constructor(
+    private apiUrl = process.env.COMFYUI_VIDEO_API_URL || process.env.COMFYUI_API_URL || "",
+    private uploadDir = process.env.UPLOAD_DIR || "./uploads",
+    private defaultWorkflow = "video_wan2_2_14B_i2v.json"
+  ) {
+    this.client = new ComfyUIAPIClient(this.apiUrl);
   }
 
-  private getClient(): ComfyUIVideoClient {
-    if (!this.client) {
-      this.client = new ComfyUIVideoClient(this.apiUrl, this.uploadDir);
+  async generateVideo(params: VideoGenerateParams): Promise<VideoGenerateResult> {
+    // 解析分辨率
+    let width = 1024, height = 1024;
+    if (params.ratio === "16:9") { width = 1280; height = 720; }
+    else if (params.ratio === "9:16") { width = 720; height = 1280; }
+
+    // 上传首尾帧
+    let firstFrameFile: string | null = null;
+    let lastFrameFile: string | null = null;
+
+    if (params.firstFrame) {
+      const data = await readImageAsBase64(params.firstFrame);
+      firstFrameFile = (await this.client.uploadImage(Buffer.from(data, "base64"), path.basename(params.firstFrame))).name;
     }
-    return this.client;
-  }
+    if (params.lastFrame) {
+      const data = await readImageAsBase64(params.lastFrame);
+      lastFrameFile = (await this.client.uploadImage(Buffer.from(data, "base64"), path.basename(params.lastFrame))).name;
+    }
 
-  /**
-   * 生成视频 - 使用ComfyUI API
-   * 支持首尾帧插值模式和自定义工作流
-   * @param params 视频生成参数
-   * @param customWorkflow 可选的自定义工作流 JSON
-   */
-  async generateVideo(
-    params: VideoGenerateParams,
-    customWorkflow?: Record<string, unknown>
-  ): Promise<VideoGenerateResult> {
-    console.log(`[ComfyUI Video] ========== Video Generation Request ==========`);
-    console.log(`[ComfyUI Video] Parameters:`, {
-      prompt: {
-        text: params.prompt.slice(0, 200) + (params.prompt.length > 200 ? "..." : ""),
-        length: params.prompt.length,
-      },
-      ratio: params.ratio,
-      duration: params.duration,
-      firstFrame: params.firstFrame ? path.basename(params.firstFrame) : null,
-      lastFrame: params.lastFrame ? path.basename(params.lastFrame) : null,
-      hasCustomWorkflow: !!customWorkflow,
-      workflowNodes: customWorkflow ? Object.keys(customWorkflow).length : 0,
+    // 加载工作流
+    const workflow = loadWorkflowTemplate(this.defaultWorkflow);
+    if (!workflow) throw new Error(`Failed to load: ${this.defaultWorkflow}`);
+
+    const frameLength = Math.max((params.duration || 5) * 8, 16);
+    const negPrompt = "色调艳丽，过曝，静态，细节模糊";
+
+    // 应用参数
+    const apiWorkflow = applyWorkflowParams(workflow, {
+      prompt: params.prompt,
+      negative_prompt: negPrompt,
+      first_frame: firstFrameFile || undefined,
+      last_frame: lastFrameFile || undefined,
+      width,
+      height,
+      frame_length: frameLength,
     });
-    console.log(`[ComfyUI Video] API URL: ${this.apiUrl}`);
 
-    const client = this.getClient();
+    const { prompt_id } = await this.client.queuePrompt(apiWorkflow);
+    const filepath = await this.waitForVideo(prompt_id, params);
 
+    return { filePath: filepath };
+  }
+
+  // ============ 异步模式方法 ============
+
+  /**
+   * 异步提交视频生成任务（不等待完成）
+   */
+  async submitVideo(params: VideoGenerateParams): Promise<{ promptId: string }> {
+    let width = 1024, height = 1024;
+    if (params.ratio === "16:9") { width = 1280; height = 720; }
+    else if (params.ratio === "9:16") { width = 720; height = 1280; }
+
+    let firstFrameFile: string | null = null;
+    let lastFrameFile: string | null = null;
+
+    if (params.firstFrame) {
+      const data = await readImageAsBase64(params.firstFrame);
+      firstFrameFile = (await this.client.uploadImage(Buffer.from(data, "base64"), path.basename(params.firstFrame))).name;
+    }
+    if (params.lastFrame) {
+      const data = await readImageAsBase64(params.lastFrame);
+      lastFrameFile = (await this.client.uploadImage(Buffer.from(data, "base64"), path.basename(params.lastFrame))).name;
+    }
+
+    const workflow = loadWorkflowTemplate(this.defaultWorkflow);
+    if (!workflow) throw new Error(`Failed to load: ${this.defaultWorkflow}`);
+
+    const frameLength = Math.max((params.duration || 5) * 8, 16);
+    const negPrompt = "色调艳丽，过曝，静态，细节模糊";
+
+    const apiWorkflow = applyWorkflowParams(workflow, {
+      prompt: params.prompt,
+      negative_prompt: negPrompt,
+      first_frame: firstFrameFile || undefined,
+      last_frame: lastFrameFile || undefined,
+      width,
+      height,
+      frame_length: frameLength,
+    });
+
+    const { prompt_id } = await this.client.queuePrompt(apiWorkflow);
+    return { promptId: prompt_id };
+  }
+
+  /**
+   * 异步检查视频任务状态
+   */
+  async checkVideoStatus(promptId: string): Promise<{ status: "pending" | "processing" | "completed" | "failed"; filePath?: string; error?: string }> {
     try {
-      // 解析比例
-      let width = 1024, height = 1024;
-      if (params.ratio === "16:9") { width = 1280; height = 720; }
-      else if (params.ratio === "9:16") { width = 720; height = 1280; }
-      else if (params.ratio === "1:1") { width = 1024; height = 1024; }
+      const queue = await this.client.getQueueStatus();
+      const isRunning = queue.queue_running.some((p: unknown) =>
+        Array.isArray(p) && (p[1] as Record<string, unknown>)?.prompt_id === promptId
+      );
+      const isPending = queue.queue_pending.some((p: unknown) =>
+        Array.isArray(p) && (p[1] as Record<string, unknown>)?.prompt_id === promptId
+      );
 
-      console.log(`[ComfyUI Video] Resolution: ${width}x${height}`);
-
-      // 上传首帧和尾帧图片
-      let firstFrameFilename: string | null = null;
-      let lastFrameFilename: string | null = null;
-
-      if (params.firstFrame) {
-        const firstFrameData = await readImageAsBase64(params.firstFrame);
-        const firstFrameName = path.basename(params.firstFrame);
-        const blob = Buffer.from(firstFrameData, "base64");
-        const result = await client.uploadImage(blob, firstFrameName);
-        firstFrameFilename = result.name;
-        console.log(`[ComfyUI Video] First frame uploaded: ${firstFrameFilename}`);
+      if (isRunning || isPending) {
+        return { status: "processing" };
       }
 
-      if (params.lastFrame) {
-        const lastFrameData = await readImageAsBase64(params.lastFrame);
-        const lastFrameName = path.basename(params.lastFrame);
-        const blob = Buffer.from(lastFrameData, "base64");
-        const result = await client.uploadImage(blob, lastFrameName);
-        lastFrameFilename = result.name;
-        console.log(`[ComfyUI Video] Last frame uploaded: ${lastFrameFilename}`);
-      }
+      const history = await this.client.getHistory(promptId);
+      const outputs = (history[promptId] as Record<string, unknown>)?.outputs as Record<string, unknown> | undefined;
 
-      // 创建视频生成工作流：优先使用自定义工作流
-      let workflow: Record<string, unknown>;
-      if (customWorkflow) {
-        workflow = this.applyWorkflowWithParams(customWorkflow, {
-          prompt: params.prompt,
-          firstFrame: firstFrameFilename,
-          lastFrame: lastFrameFilename,
-          duration: params.duration || 5,
-          width,
-          height,
-        });
-        console.log(`[ComfyUI Video] Using custom workflow (${Object.keys(workflow).length} nodes)`);
-      } else {
-        // 加载视频工作流模板
-        const templateWorkflow = loadWorkflowTemplate(this.defaultVideoWorkflow);
-        if (!templateWorkflow) {
-          throw new Error(`Failed to load video workflow template: ${this.defaultVideoWorkflow}`);
+      for (const nodeId of Object.keys(outputs || {})) {
+        const output = outputs![nodeId] as Record<string, unknown>;
+        if (output?.videos || output?.gifs) {
+          return { status: "completed" };
         }
-        
-        workflow = this.applyWorkflowWithParams(templateWorkflow, {
-          prompt: params.prompt,
-          firstFrame: firstFrameFilename,
-          lastFrame: lastFrameFilename,
-          duration: params.duration || 5,
-          width,
-          height,
-        });
-        console.log(`[ComfyUI Video] Using default video workflow: ${this.defaultVideoWorkflow}`);
       }
-
-      // 提交任务
-      console.log(`[ComfyUI Video] Submitting prompt to queue...`);
-      const { prompt_id } = await client.queuePrompt(workflow);
-      console.log(`[ComfyUI Video] Prompt queued, ID: ${prompt_id}`);
-
-      // 轮询等待完成
-      const startTime = Date.now();
-      console.log(`[ComfyUI Video] Waiting for completion...`);
-      const result = await this.waitForVideoCompletion(client, prompt_id, params);
-      
-      const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-      console.log(`[ComfyUI Video] ========== Video Generation Completed ==========`);
-      console.log(`[ComfyUI Video] Duration: ${duration}s, File: ${result.filePath}`);
-      
-      return result;
-    } catch (error) {
-      console.error(`[ComfyUI Video] ========== Video Generation Failed ==========`);
-      console.error(`[ComfyUI Video] Error:`, {
-        message: error instanceof Error ? error.message : "Unknown error",
-        stack: error instanceof Error ? error.stack : undefined,
-      });
-      throw new Error(`ComfyUI 视频生成失败: ${error instanceof Error ? error.message : "未知错误"}`);
+      return { status: "failed", error: "No video output found" };
+    } catch (e) {
+      return { status: "failed", error: String(e) };
     }
   }
 
   /**
-   * 将参数应用到工作流
-   * 支持占位符替换：
-   * - {{prompt}} - 正向提示词
-   * - {{negative_prompt}} - 负向提示词
-   * - {{first_frame}} - 首帧文件名
-   * - {{last_frame}} - 尾帧文件名
-   * - {{width}} - 宽度
-   * - {{height}} - 高度
-   * - {{duration}} - 时长
-   * - {{frame_length}} - 帧数 (duration * 8)
+   * 异步轮询直到视频生成完成并下载
    */
-  private applyWorkflowWithParams(
-    workflow: Record<string, unknown>,
-    params: {
-      prompt: string;
-      firstFrame: string | null;
-      lastFrame: string | null;
-      duration: number;
-      width: number;
-      height: number;
-    }
-  ): Record<string, unknown> {
-    const frameLength = Math.max(params.duration * 8, 16);
-    const defaultNegativePrompt = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量";
-
-    const result: Record<string, unknown> = {};
-
-    for (const [nodeId, nodeConfig] of Object.entries(workflow)) {
-      if (typeof nodeConfig !== "object" || nodeConfig === null) {
-        result[nodeId] = nodeConfig;
-        continue;
-      }
-
-      const config = nodeConfig as Record<string, unknown>;
-      const inputs = (config.inputs as Record<string, unknown>) || {};
-      const newInputs: Record<string, unknown> = {};
-
-      for (const [key, value] of Object.entries(inputs)) {
-        if (typeof value === "string") {
-          // 替换占位符
-          let newValue = value
-            .replace(/\{\{prompt\}\}/g, params.prompt)
-            .replace(/\{\{negative_prompt\}\}/g, defaultNegativePrompt)
-            .replace(/\{\{first_frame\}\}/g, params.firstFrame || "")
-            .replace(/\{\{last_frame\}\}/g, params.lastFrame || "")
-            .replace(/\{\{width\}\}/g, String(params.width))
-            .replace(/\{\{height\}\}/g, String(params.height))
-            .replace(/\{\{duration\}\}/g, String(params.duration))
-            .replace(/\{\{frame_length\}\}/g, String(frameLength));
-          newInputs[key] = newValue;
-        } else if (Array.isArray(value)) {
-          // 处理数组值（如节点引用 ["nodeId", 0]）
-          newInputs[key] = value.map(v => {
-            if (typeof v === "string") {
-              return v
-                .replace(/\{\{prompt\}\}/g, params.prompt)
-                .replace(/\{\{negative_prompt\}\}/g, defaultNegativePrompt)
-                .replace(/\{\{first_frame\}\}/g, params.firstFrame || "")
-                .replace(/\{\{last_frame\}\}/g, params.lastFrame || "");
-            }
-            return v;
-          });
-        } else {
-          newInputs[key] = value;
-        }
-      }
-
-      result[nodeId] = { ...config, inputs: newInputs };
-    }
-
-    return result;
-  }
-
-  private async waitForVideoCompletion(
-    client: ComfyUIVideoClient,
+  async pollVideoUntilComplete(
     promptId: string,
     params: VideoGenerateParams,
-    maxRetries: number = 300,
-    intervalMs: number = 2000
-  ): Promise<VideoGenerateResult> {
-    let retryCount = 0;
-    const uploadDir = client.getUploadDir();
+    options?: { onProgress?: (value: number) => void },
+    maxRetries = 600
+  ): Promise<string> {
+    for (let i = 0; i < maxRetries; i++) {
+      const status = await this.checkVideoStatus(promptId);
 
-    while (retryCount < maxRetries) {
-      await new Promise(resolve => setTimeout(resolve, intervalMs));
-      retryCount++;
+      if (status.status === "completed") {
+        // 下载视频
+        const history = await this.client.getHistory(promptId);
+        const outputs = (history[promptId] as Record<string, unknown>)?.outputs as Record<string, unknown>;
 
-      const queueStatus = await client.getQueueStatus();
-      const isRunning = queueStatus.queue_running.some((p: unknown) => {
-        if (Array.isArray(p) && p.length >= 2) {
-          const promptData = p[1] as Record<string, unknown>;
-          return promptData?.prompt_id === promptId;
+        for (const nodeId of Object.keys(outputs || {})) {
+          const output = outputs![nodeId] as Record<string, unknown>;
+          if (output?.videos || output?.gifs) {
+            const videos = (output.videos || output.gifs) as Array<{ filename: string; subfolder?: string }>;
+            const url = this.client.getImageUrl(videos[0].filename, videos[0].subfolder || "", "temp");
+
+            const buffer = Buffer.from(await (await fetch(url)).arrayBuffer());
+            const filename = `${ulid()}.mp4`;
+            const dir = params.projectId ? getProjectVideosDir(params.projectId) : path.join(this.uploadDir, "videos");
+            fs.mkdirSync(dir, { recursive: true });
+            const filepath = path.join(dir, filename);
+            fs.writeFileSync(filepath, buffer);
+            return filepath;
+          }
         }
-        return false;
-      });
-
-      if (isRunning) {
-        if (retryCount % 30 === 0) {
-          console.log(`[ComfyUI Video] Task running, retry ${retryCount}/${maxRetries}, elapsed=${((retryCount * intervalMs) / 1000).toFixed(0)}s`);
-        }
-        continue;
       }
 
-      // 检查历史
-      try {
-        const history = await client.getHistory(promptId);
-        const promptHistory = history[promptId] as Record<string, unknown> | undefined;
+      if (status.status === "failed") {
+        throw new Error(status.error || "Video generation failed");
+      }
 
-        if (promptHistory) {
-          const outputs = (promptHistory?.outputs || {}) as Record<string, unknown>;
+      options?.onProgress?.(Math.min((i / maxRetries) * 100, 95));
+      await new Promise(r => setTimeout(r, 2000));
+    }
+    throw new Error("Video generation timeout");
+  }
 
-          // 查找输出视频
-          for (const nodeId of Object.keys(outputs)) {
-            const nodeOutput = outputs[nodeId] as Record<string, unknown>;
-            
-            // 检查视频输出 (通常是 VHS_VideoCombine 或类似节点)
-            if (nodeOutput?.gifs || nodeOutput?.videos) {
-              const videos = (nodeOutput.gifs || nodeOutput.videos) as Array<{ filename: string; subfolder?: string }>;
-              if (videos.length > 0) {
-                const videoInfo = videos[0];
-                const videoUrl = client.getImageUrl(
-                  videoInfo.filename,
-                  videoInfo.subfolder || "",
-                  "temp"
-                );
+  private async waitForVideo(promptId: string, params: VideoGenerateParams, maxRetries = 300): Promise<string> {
+    for (let i = 0; i < maxRetries; i++) {
+      await new Promise(r => setTimeout(r, 2000));
 
-                // 下载视频
-                const response = await fetch(videoUrl);
-                if (!response.ok) {
-                  throw new Error(`下载视频失败: ${response.status}`);
-                }
+      const queue = await this.client.getQueueStatus();
+      const isRunning = queue.queue_running.some((p: unknown) =>
+        Array.isArray(p) && (p[1] as Record<string, unknown>)?.prompt_id === promptId
+      );
 
-                const buffer = Buffer.from(await response.arrayBuffer());
-                const filename = `${ulid()}.mp4`;
-                let dir: string;
-                if (params.projectId) {
-                  dir = getProjectVideosDir(params.projectId);
-                } else {
-                  dir = path.join(uploadDir, "videos");
-                }
-                fs.mkdirSync(dir, { recursive: true });
-                const filepath = path.join(dir, filename);
-                fs.writeFileSync(filepath, buffer);
+      if (!isRunning) {
+        const history = await this.client.getHistory(promptId);
+        const outputs = (history[promptId] as Record<string, unknown>)?.outputs as Record<string, unknown>;
 
-                console.log(`[ComfyUI Video] Saved to: ${filepath}`);
-                return { filePath: filepath };
-              }
-            }
-          }
+        for (const nodeId of Object.keys(outputs || {})) {
+          const output = outputs![nodeId] as Record<string, unknown>;
+          if (output?.videos || output?.gifs) {
+            const videos = (output.videos || output.gifs) as Array<{ filename: string; subfolder?: string }>;
+            const url = this.client.getImageUrl(videos[0].filename, videos[0].subfolder || "", "temp");
 
-          // 检查是否有错误
-          const status = promptHistory?.status as Record<string, unknown> | undefined;
-          if (status?.status === "error") {
-            throw new Error("视频生成任务执行出错");
+            const buffer = Buffer.from(await (await fetch(url)).arrayBuffer());
+            const filename = `${ulid()}.mp4`;
+            const dir = params.projectId ? getProjectVideosDir(params.projectId) : path.join(this.uploadDir, "videos");
+            fs.mkdirSync(dir, { recursive: true });
+            const filepath = path.join(dir, filename);
+            fs.writeFileSync(filepath, buffer);
+            return filepath;
           }
         }
-      } catch (e) {
-        console.warn(`[ComfyUI Video] History API error: ${e instanceof Error ? e.message : 'unknown'}`);
       }
     }
-
-    throw new Error(`视频生成任务超时 (${(maxRetries * intervalMs / 1000).toFixed(0)}s)`);
+    throw new Error("Video generation timeout");
   }
 }
 
-// 默认实例
-let defaultImageProvider: ComfyUIImageProvider | null = null;
-let defaultVideoProvider: ComfyUIVideoProvider | null = null;
+// ============ 导出默认实例 ============
+
+let imageProvider: ComfyUIImageProvider | null = null;
+let videoProvider: ComfyUIVideoProvider | null = null;
 
 export function getComfyUIImageProvider(): ComfyUIImageProvider {
-  if (!defaultImageProvider) {
-    defaultImageProvider = new ComfyUIImageProvider();
-  }
-  return defaultImageProvider;
+  return imageProvider || (imageProvider = new ComfyUIImageProvider());
 }
 
 export function getComfyUIVideoProvider(): ComfyUIVideoProvider {
-  if (!defaultVideoProvider) {
-    defaultVideoProvider = new ComfyUIVideoProvider();
-  }
-  return defaultVideoProvider;
+  return videoProvider || (videoProvider = new ComfyUIVideoProvider());
 }
 
 /**
- * 通过 promptId 直接从 ComfyUI 获取已生成的图片
- * 用于任务超时后恢复结果。只检查一次，没有就返回 null
+ * 通过 promptId 恢复图片
  */
-export async function fetchComfyUIImageByPromptId(
+export async function recoverImageByPromptId(
   promptId: string,
   apiUrl?: string,
   uploadDir?: string
 ): Promise<string | null> {
   const url = apiUrl || process.env.COMFYUI_API_URL || "";
   const dir = uploadDir || process.env.UPLOAD_DIR || "./uploads";
-  
-  if (!url) {
-    throw new Error("COMFYUI_API_URL 未配置");
-  }
 
   const client = new ComfyUIAPIClient(url);
-  
   try {
-    // 只检查一次，没有图片就直接返回 null
     const history = await client.getHistory(promptId);
-    const promptHistory = history[promptId] as Record<string, unknown> | undefined;
+    const outputs = (history[promptId] as Record<string, unknown>)?.outputs as Record<string, unknown>;
 
-    if (promptHistory) {
-      const outputs = (promptHistory?.outputs || {}) as Record<string, unknown>;
+    for (const nodeId of Object.keys(outputs || {})) {
+      const output = outputs![nodeId] as Record<string, unknown>;
+      if (output?.images) {
+        const images = output.images as Array<{ filename: string; subfolder?: string }>;
+        const buffer = await client.downloadImage(images[0].filename, images[0].subfolder || "");
 
-      for (const nodeId of Object.keys(outputs)) {
-        const nodeOutput = outputs[nodeId] as Record<string, unknown>;
-        if (nodeOutput?.images) {
-          const images = nodeOutput.images as Array<{ filename: string; subfolder?: string }>;
-          if (images.length > 0) {
-            const imageInfo = images[0];
-            const imageBuffer = await client.downloadImage(
-              imageInfo.filename,
-              imageInfo.subfolder || ""
-            );
-
-            const filename = `${ulid()}.png`;
-            const framesDir = path.join(dir, "frames");
-            fs.mkdirSync(framesDir, { recursive: true });
-            const filepath = path.join(framesDir, filename);
-            fs.writeFileSync(filepath, imageBuffer);
-
-            console.log(`[ComfyUI] Retrieved image by promptId, saved to: ${filepath}`);
-            return filepath;
-          }
-        }
+        const filename = `${ulid()}.png`;
+        const framesDir = path.join(dir, "frames");
+        fs.mkdirSync(framesDir, { recursive: true });
+        const filepath = path.join(framesDir, filename);
+        fs.writeFileSync(filepath, buffer);
+        return filepath;
       }
     }
-    return null;
-  } catch (error) {
-    console.error(`[ComfyUI] Failed to fetch image by promptId: ${error}`);
-    return null;
+  } catch (e) {
+    console.error(`[ComfyUI] Recover failed: ${e}`);
   }
+  return null;
 }

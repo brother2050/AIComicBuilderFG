@@ -37,6 +37,10 @@ export interface ImageOptions {
   onPromptIdSubmit?: (promptId: string) => void | Promise<void>; // ComfyUI 提交后回调
   customWorkflow?: Record<string, unknown>; // 自定义工作流 JSON
   projectId?: string; // 项目ID，用于分目录存储
+  // 进度回调 (ComfyUI)
+  onProgress?: (progress: number) => void; // 进度百分比 0-100
+  onNodeExecuting?: (nodeId: string | null) => void; // 当前执行节点
+  onComplete?: () => void; // 完成回调
 }
 
 // 视频生成参数

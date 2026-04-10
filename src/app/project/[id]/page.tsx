@@ -130,84 +130,14 @@ interface WorkflowInfo {
   templateName?: string;
 }
 
-// 动态模板接口（从 ComfyUI 服务器获取）
+// 动态模板接口（从服务器获取）
 interface DynamicTemplate {
   id: string;
   name: string;
   description: string;
   file: string;
-  category?: string;
+  category: string;
 }
-
-// 工作流模板定义
-interface WorkflowTemplate {
-  id: string;
-  name: string;
-  description: string;
-  icon: React.ElementType;
-  workflow: Record<string, unknown>;
-  category?: string;
-}
-
-// 预设工作流模板
-const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
-  {
-    id: "wan22_i2v",
-    name: "Wan2.2 图生视频",
-    description: "基于 Wan2.2 模型的图生视频，支持首帧输入",
-    icon: Wand2,
-    workflow: {
-      // 这里存储模板工作流 JSON
-      _template: true,
-      _name: "Wan2.2 Image to Video",
-      _description: "基于 Wan2.2 I2V 模型，支持 {{duration}}s 视频生成"
-    }
-  },
-  {
-    id: "ltx_video",
-    name: "LTX Video",
-    description: "使用 LTX Video 模型生成视频",
-    icon: Film,
-    workflow: {
-      _template: true,
-      _name: "LTX Video",
-      _description: "LTX Video 模型"
-    }
-  },
-  {
-    id: "f五一生",
-    name: "F.1 AI",
-    description: "F.1 AI 视频生成模型",
-    icon: Box,
-    workflow: {
-      _template: true,
-      _name: "F.1 AI Video",
-      _description: "F.1 AI 视频生成"
-    }
-  },
-  {
-    id: "cogvidex",
-    name: "CogVideoX",
-    description: "智谱 CogVideoX 视频生成",
-    icon: Sparkles,
-    workflow: {
-      _template: true,
-      _name: "CogVideoX",
-      _description: "CogVideoX 视频生成模型"
-    }
-  },
-  {
-    id: "custom",
-    name: "自定义上传",
-    description: "从本地 JSON 文件导入工作流",
-    icon: Upload,
-    workflow: {
-      _template: true,
-      _name: "Custom Workflow",
-      _description: "用户自定义工作流"
-    }
-  }
-];
 
 interface TaskProgress {
   taskId: string;
@@ -239,10 +169,12 @@ export default function ProjectPage() {
   const [shots, setShots] = useState<Shot[]>([]);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState<string | null>(null);
+  const [uploadingCharImage, setUploadingCharImage] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState("overview");
   const [taskProgress, setTaskProgress] = useState<TaskProgress | null>(null);
   const [pollingActive, setPollingActive] = useState(false);
   const [scriptPreview, setScriptPreview] = useState("");
+  const [activeEpisode, setActiveEpisode] = useState(1);
 
   // 编辑状态
   const [editingShot, setEditingShot] = useState<Shot | null>(null);
@@ -259,195 +191,35 @@ export default function ProjectPage() {
   const [scriptInputText, setScriptInputText] = useState("");
   const [scriptDialogTab, setScriptDialogTab] = useState<"idea" | "paste">("idea");
 
-  // 工作流设置
-  const [showWorkflowSettings, setShowWorkflowSettings] = useState(false);
-  const [workflowInfo, setWorkflowInfo] = useState<WorkflowInfo | null>(null);
-  const [uploadingWorkflow, setUploadingWorkflow] = useState(false);
-  const [dynamicTemplates, setDynamicTemplates] = useState<DynamicTemplate[]>([]);
-  const [templatesLoading, setTemplatesLoading] = useState(false);
-  const [templateCategory, setTemplateCategory] = useState<"image" | "video" | "all">("all");
-  const [showImageWorkflow, setShowImageWorkflow] = useState(false);
-
-  // 分集相关状态
-  const [activeEpisode, setActiveEpisode] = useState(1);
-  const [uploadingCharImage, setUploadingCharImage] = useState<string | null>(null);
-
-  // 角色描述模板管理
-  const [charTemplates, setCharTemplates] = useState<any[]>([]);
-  const [showTemplateSettings, setShowTemplateSettings] = useState(false);
-  const [editingTemplate, setEditingTemplate] = useState<any>(null);
-  const [templateLoading, setTemplateLoading] = useState(false);
-
-  // 加载角色描述模板
-  const fetchCharTemplates = async () => {
-    setTemplateLoading(true);
-    try {
-      const res = await fetch(`/api/templates/character-description`);
-      const data = await res.json();
-      if (data.templates) {
-        setCharTemplates(data.templates);
-      }
-    } catch (error) {
-      console.error("Failed to fetch templates:", error);
-    } finally {
-      setTemplateLoading(false);
-    }
-  };
-
-  // 创建新模板（复制默认模板）
-  const handleCreateTemplate = async () => {
-    const name = prompt("请输入新模板名称：");
-    if (!name) return;
-
-    try {
-      const res = await fetch(`/api/templates/character-description`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name,
-          description: "基于默认模板创建",
-          systemPrompt: DEFAULT_CHARACTER_TEMPLATE,
-          projectId,
-        }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        await fetchCharTemplates();
-        alert("模板创建成功！请编辑模板内容。");
-        setEditingTemplate(data.template);
-      } else {
-        alert(`创建失败: ${data.error}`);
-      }
-    } catch (error) {
-      console.error("Failed to create template:", error);
-    }
-  };
-
-  // 保存模板
-  const handleSaveTemplate = async () => {
-    if (!editingTemplate) return;
-
-    try {
-      const res = await fetch(`/api/templates/character-description`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(editingTemplate),
-      });
-      const data = await res.json();
-      if (data.success) {
-        await fetchCharTemplates();
-        setEditingTemplate(null);
-        alert("模板保存成功！");
-      } else {
-        alert(`保存失败: ${data.error}`);
-      }
-    } catch (error) {
-      console.error("Failed to save template:", error);
-    }
-  };
-
-  // 删除模板
-  const handleDeleteTemplate = async (id: string) => {
-    if (!confirm("确定要删除这个模板吗？")) return;
-
-    try {
-      const res = await fetch(`/api/templates/character-description?id=${id}`, {
-        method: "DELETE",
-      });
-      const data = await res.json();
-      if (data.success) {
-        await fetchCharTemplates();
-        alert("模板已删除");
-      } else {
-        alert(`删除失败: ${data.error}`);
-      }
-    } catch (error) {
-      console.error("Failed to delete template:", error);
-    }
-  };
-
-  // 图像工作流参数状态
+  // ===== 图片生成工作流设置 =====
+  const [imageWorkflow, setImageWorkflow] = useState<{
+    templateName: string | null;
+    classTypes: string[];
+  } | null>(null);
+  const [availableImageWorkflows, setAvailableImageWorkflows] = useState<any[]>([]);
+  const [imageWorkflowLoading, setImageWorkflowLoading] = useState(false);
   const [imageWorkflowParams, setImageWorkflowParams] = useState({
     width: 1024,
     height: 1024,
     steps: 8,
     workflowFile: "image_z_image_turbo.json",
   });
-  const [availableWorkflows, setAvailableWorkflows] = useState<any[]>([]);
-  const [workflowParamsLoading, setWorkflowParamsLoading] = useState(false);
 
-  // 加载可用的工作流模板列表
-  const fetchAvailableWorkflows = async () => {
-    setWorkflowParamsLoading(true);
-    try {
-      const res = await fetch(`/api/templates/comfyui-workflow?category=image`);
-      const data = await res.json();
-      if (data.templates) {
-        setAvailableWorkflows(data.templates);
-        // 如果还没有选择工作流，设置默认值
-        if (!imageWorkflowParams.workflowFile && data.templates.length > 0) {
-          setImageWorkflowParams(prev => ({
-            ...prev,
-            workflowFile: data.templates[0].file,
-          }));
-        }
-      }
-    } catch (error) {
-      console.error("Failed to fetch workflows:", error);
-    } finally {
-      setWorkflowParamsLoading(false);
-    }
-  };
+  // ===== 视频生成工作流设置 =====
+  const [videoWorkflow, setVideoWorkflow] = useState<{
+    templateName: string | null;
+    classTypes: string[];
+  } | null>(null);
+  const [availableVideoWorkflows, setAvailableVideoWorkflows] = useState<any[]>([]);
+  const [videoWorkflowLoading, setVideoWorkflowLoading] = useState(false);
+  const [showImageWorkflowSection, setShowImageWorkflowSection] = useState(false);
+  const [showVideoWorkflowSection, setShowVideoWorkflowSection] = useState(false);
 
-  // 选择工作流时更新参数
-  const handleWorkflowSelect = async (workflowId: string) => {
-    setImageWorkflowParams(prev => ({ ...prev, workflowFile: workflowId }));
-
-    // 获取该工作流的默认参数
-    try {
-      const res = await fetch(`/api/templates/comfyui-workflow?id=${workflowId}`);
-      const data = await res.json();
-      if (data.template?.params) {
-        const params = data.template.params;
-        setImageWorkflowParams(prev => ({
-          ...prev,
-          workflowFile: workflowId,
-          width: params.width?.default || 1024,
-          height: params.height?.default || 1024,
-          steps: params.steps?.default || 8,
-        }));
-      }
-    } catch (error) {
-      console.error("Failed to fetch workflow params:", error);
-    }
-  };
-
-  // 保存工作流参数到项目
-  const handleSaveWorkflowParams = async () => {
-    try {
-      const res = await fetch(`/api/projects/${projectId}/workflow`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          imageWorkflowParams,
-        }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        alert("工作流参数已保存");
-      } else {
-        alert(`保存失败: ${data.error}`);
-      }
-    } catch (error) {
-      console.error("Failed to save workflow params:", error);
-    }
-  };
-
-  useEffect(() => {
-    fetchProject();
-    fetchWorkflowInfo();
-    fetchAvailableWorkflows();
-  }, [projectId]);
+  // 角色模板相关
+  const [charTemplates, setCharTemplates] = useState<any[]>([]);
+  const [templateLoading, setTemplateLoading] = useState(false);
+  const [showTemplateSettings, setShowTemplateSettings] = useState(false);
+  const [editingTemplate, setEditingTemplate] = useState<any>(null);
 
   // 轮询任务进度
   useEffect(() => {
@@ -561,248 +333,226 @@ export default function ProjectPage() {
     }
   };
 
-  const fetchWorkflowInfo = async () => {
+  // ===== 角色模板函数 =====
+  const fetchCharTemplates = async () => {
+    setTemplateLoading(true);
     try {
-      const res = await fetch(`/api/projects/${projectId}/workflow`);
-      const data = await res.json();
-      if (data.hasWorkflow) {
-        setWorkflowInfo({
-          hasWorkflow: true,
-          nodeCount: Object.keys(data.workflow || {}).length,
-          classTypes: data.classTypes || [],
-          templateName: data.templateName || "custom",
-        });
-      } else {
-        setWorkflowInfo(null);
-      }
-    } catch (error) {
-      console.error("Failed to fetch workflow:", error);
-    }
-  };
-
-  // 从 ComfyUI 服务器获取动态模板列表
-  const fetchDynamicTemplates = async (category: "image" | "video" | "all" = "all") => {
-    setTemplatesLoading(true);
-    try {
-      const res = await fetch(`/api/comfyui/templates?type=${category}`);
+      const res = await fetch(`/api/templates?category=character`);
       const data = await res.json();
       if (data.templates) {
-        setDynamicTemplates(data.templates);
+        setCharTemplates(data.templates);
       }
     } catch (error) {
       console.error("Failed to fetch templates:", error);
-      // 如果 API 失败，使用默认模板
-      setDynamicTemplates([]);
     } finally {
-      setTemplatesLoading(false);
+      setTemplateLoading(false);
     }
   };
 
-  const handleTemplateSelect = async (templateId: string) => {
-    if (templateId === "custom") {
-      // 自定义模板需要上传文件
-      return;
-    }
-
-    // 优先从动态模板中查找
-    const dynamicTemplate = dynamicTemplates.find(t => t.id === templateId);
-    if (dynamicTemplate) {
-      // 动态模板：从 ComfyUI 服务器获取工作流
-      try {
-        const baseUrl = process.env.NEXT_PUBLIC_COMFYUI_API_URL || process.env.COMFYUI_API_URL;
-        const workflowRes = await fetch(`${baseUrl}/templates/${dynamicTemplate.file}`);
-        if (!workflowRes.ok) {
-          throw new Error("Failed to fetch template workflow");
-        }
-        const workflowData = await workflowRes.json();
-        
-        // 添加模板元信息
-        const workflowWithMeta = {
-          ...workflowData,
-          _templateId: templateId,
-          _templateName: dynamicTemplate.name,
-          _description: dynamicTemplate.description,
-          _category: dynamicTemplate.category,
-        };
-
-        const res = await fetch(`/api/projects/${projectId}/workflow`, {
+  const handleSaveTemplate = async () => {
+    if (!editingTemplate) return;
+    try {
+      if (editingTemplate.id) {
+        await fetch(`/api/templates/${editingTemplate.id}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ 
-            workflow: workflowWithMeta,
-            templateName: templateId 
-          }),
+          body: JSON.stringify(editingTemplate),
         });
-
-        const data = await res.json();
-        if (data.success) {
-          setWorkflowInfo({
-            hasWorkflow: true,
-            nodeCount: Object.keys(workflowData).length,
-            classTypes: extractClassTypes(workflowData),
-            templateName: templateId,
-          });
-        } else {
-          alert(`设置模板失败: ${data.error}`);
-        }
-      } catch (error) {
-        console.error("Failed to set template:", error);
-        // 如果获取工作流失败，保存模板引用
-        await saveTemplateReference(templateId, dynamicTemplate);
       }
-      return;
+      setEditingTemplate(null);
+      fetchCharTemplates();
+    } catch (error) {
+      console.error("Failed to save template:", error);
     }
+  };
 
-    // 预设模板：从本地模板获取工作流
-    const template = WORKFLOW_TEMPLATES.find(t => t.id === templateId);
-    if (!template) return;
-
+  const handleDeleteTemplate = async (templateId: string) => {
+    if (!confirm("确定要删除这个模板吗？")) return;
     try {
-      const workflowData = {
-        _templateId: templateId,
-        _templateName: template.name,
-        _description: template.description,
-        _category: template.category,
-      };
+      await fetch(`/api/templates/${templateId}`, { method: "DELETE" });
+      fetchCharTemplates();
+    } catch (error) {
+      console.error("Failed to delete template:", error);
+    }
+  };
 
-      const res = await fetch(`/api/projects/${projectId}/workflow`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          workflow: workflowData,
-          templateName: templateId 
-        }),
-      });
+  const handleCreateTemplate = () => {
+    setEditingTemplate({
+      id: undefined,
+      name: "",
+      description: "",
+      systemPrompt: "",
+      isDefault: false,
+      category: "character",
+    });
+  };
 
-      const data = await res.json();
-      if (data.success) {
-        setWorkflowInfo({
-          hasWorkflow: true,
-          nodeCount: 0,
-          classTypes: [template.name],
-          templateName: templateId,
+  // ===== 图片工作流函数 =====
+  const fetchImageWorkflows = async () => {
+    setImageWorkflowLoading(true);
+    try {
+      // 获取可用模板列表
+      const templatesRes = await fetch(`/api/templates/comfyui-workflow?category=image`);
+      const templatesData = await templatesRes.json();
+      if (templatesData.templates) {
+        setAvailableImageWorkflows(templatesData.templates);
+      }
+      // 获取项目已配置的工作流
+      const workflowRes = await fetch(`/api/projects/${projectId}/workflow?type=image`);
+      const workflowData = await workflowRes.json();
+      if (workflowData.hasWorkflow) {
+        setImageWorkflow({
+          templateName: workflowData.templateName || null,
+          classTypes: workflowData.classTypes || [],
         });
       } else {
-        alert(`设置模板失败: ${data.error}`);
+        setImageWorkflow(null);
       }
     } catch (error) {
-      console.error("Failed to set template:", error);
-      alert("设置模板失败，请重试");
-    }
-  };
-
-  // 保存模板引用（当无法获取完整工作流时）
-  const saveTemplateReference = async (templateId: string, template: DynamicTemplate) => {
-    try {
-      const workflowData = {
-        _templateId: templateId,
-        _templateName: template.name,
-        _description: template.description,
-        _category: template.category,
-        _file: template.file,
-      };
-
-      const res = await fetch(`/api/projects/${projectId}/workflow`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          workflow: workflowData,
-          templateName: templateId 
-        }),
-      });
-
-      const data = await res.json();
-      if (data.success) {
-        setWorkflowInfo({
-          hasWorkflow: true,
-          nodeCount: 0,
-          classTypes: [template.name],
-          templateName: templateId,
-        });
-        alert(`${template.name} 模板已设置`);
-      }
-    } catch (error) {
-      console.error("Failed to save template reference:", error);
-    }
-  };
-
-  // 从工作流中提取节点类型
-  const extractClassTypes = (workflow: Record<string, unknown>): string[] => {
-    const types = new Set<string>();
-    for (const node of Object.values(workflow)) {
-      if (typeof node === "object" && node !== null) {
-        const n = node as Record<string, unknown>;
-        if (n.class_type) {
-          types.add(n.class_type as string);
-        }
-      }
-    }
-    return Array.from(types);
-  };
-
-  const handleWorkflowUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    if (!file.name.endsWith(".json")) {
-      alert("只支持 JSON 格式文件");
-      return;
-    }
-
-    setUploadingWorkflow(true);
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-
-      const res = await fetch(`/api/projects/${projectId}/workflow/upload`, {
-        method: "POST",
-        body: formData,
-      });
-
-      const data = await res.json();
-      if (data.success) {
-        setWorkflowInfo({
-          hasWorkflow: true,
-          nodeCount: data.nodeCount,
-          classTypes: data.classTypes || [],
-          templateName: "custom",
-        });
-        alert(`工作流上传成功！包含 ${data.nodeCount} 个节点`);
-      } else {
-        alert(`上传失败: ${data.error}`);
-      }
-    } catch (error) {
-      console.error("Failed to upload workflow:", error);
-      alert("上传失败，请重试");
+      console.error("Failed to fetch image workflows:", error);
     } finally {
-      setUploadingWorkflow(false);
-      // 清空文件输入
-      event.target.value = "";
+      setImageWorkflowLoading(false);
     }
   };
 
-  const handleWorkflowClear = async () => {
-    if (!confirm("确定要清除工作流配置吗？")) return;
+  const handleImageWorkflowSelect = async (workflowId: string) => {
+    try {
+      // 获取该工作流的默认参数
+      const res = await fetch(`/api/templates/comfyui-workflow?id=${workflowId}`);
+      const data = await res.json();
+      const params = data.template?.params || {};
+      setImageWorkflowParams(prev => ({
+        ...prev,
+        workflowFile: workflowId,
+        width: params.width?.default || 1024,
+        height: params.height?.default || 1024,
+        steps: params.steps?.default || 20,
+      }));
+      // 保存到项目
+      await fetch(`/api/projects/${projectId}/workflow`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageWorkflowParams: { ...imageWorkflowParams, workflowFile: workflowId },
+          type: "image",
+        }),
+      });
+      setImageWorkflow({ templateName: workflowId, classTypes: [] });
+      alert("图片工作流已切换");
+    } catch (error) {
+      console.error("Failed to select image workflow:", error);
+    }
+  };
 
+  const handleSaveImageWorkflowParams = async () => {
     try {
       const res = await fetch(`/api/projects/${projectId}/workflow`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workflow: null, templateName: null }),
+        body: JSON.stringify({
+          imageWorkflowParams,
+          type: "image",
+        }),
       });
-
       const data = await res.json();
       if (data.success) {
-        setWorkflowInfo(null);
-        alert("工作流已清除");
+        alert("参数已保存");
       } else {
-        alert(`清除失败: ${data.error}`);
+        alert(`保存失败: ${data.error}`);
+      }
+    } catch (error) {
+      console.error("Failed to save params:", error);
+    }
+  };
+
+  const handleClearImageWorkflow = async () => {
+    if (!confirm("确定要清除图片工作流配置吗？")) return;
+    try {
+      const res = await fetch(`/api/projects/${projectId}/workflow`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workflow: null, type: "image" }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setImageWorkflow(null);
+        alert("图片工作流已清除");
       }
     } catch (error) {
       console.error("Failed to clear workflow:", error);
-      alert("清除失败，请重试");
     }
   };
+
+  // ===== 视频工作流函数 =====
+  const fetchVideoWorkflows = async () => {
+    setVideoWorkflowLoading(true);
+    try {
+      // 获取可用模板列表
+      const templatesRes = await fetch(`/api/templates/comfyui-workflow?category=video`);
+      const templatesData = await templatesRes.json();
+      if (templatesData.templates) {
+        setAvailableVideoWorkflows(templatesData.templates);
+      }
+      // 获取项目已配置的工作流
+      const workflowRes = await fetch(`/api/projects/${projectId}/workflow?type=video`);
+      const workflowData = await workflowRes.json();
+      if (workflowData.hasWorkflow) {
+        setVideoWorkflow({
+          templateName: workflowData.templateName || null,
+          classTypes: workflowData.classTypes || [],
+        });
+      } else {
+        setVideoWorkflow(null);
+      }
+    } catch (error) {
+      console.error("Failed to fetch video workflows:", error);
+    } finally {
+      setVideoWorkflowLoading(false);
+    }
+  };
+
+  const handleVideoWorkflowSelect = async (workflowId: string) => {
+    try {
+      await fetch(`/api/projects/${projectId}/workflow`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workflow: { _workflowFile: workflowId },
+          templateName: workflowId,
+          type: "video",
+        }),
+      });
+      setVideoWorkflow({ templateName: workflowId, classTypes: [] });
+      alert("视频工作流已切换");
+    } catch (error) {
+      console.error("Failed to select video workflow:", error);
+    }
+  };
+
+  const handleClearVideoWorkflow = async () => {
+    if (!confirm("确定要清除视频工作流配置吗？")) return;
+    try {
+      const res = await fetch(`/api/projects/${projectId}/workflow`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workflow: null, type: "video" }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setVideoWorkflow(null);
+        alert("视频工作流已清除");
+      }
+    } catch (error) {
+      console.error("Failed to clear workflow:", error);
+    }
+  };
+
+  // 初始化加载
+  useEffect(() => {
+    fetchProject();
+    fetchImageWorkflows();
+    fetchVideoWorkflows();
+  }, [projectId]);
 
   const startGenerate = async (action: string, options?: { idea?: string; style?: string; force?: boolean; episode?: number }) => {
     // script_generate 需要用户输入想法（如果没有提供 idea）
@@ -1338,446 +1088,180 @@ export default function ProjectPage() {
                   </Button>
                 </div>
 
-                {/* Workflow Settings */}
+                {/* 工作流设置 */}
                 <Card className="mt-4">
                   <CardHeader>
-                    <button
-                      className="flex items-center gap-2 w-full text-left"
-                      onClick={() => {
-                        setShowWorkflowSettings(!showWorkflowSettings);
-                        if (!showWorkflowSettings && dynamicTemplates.length === 0) {
-                          fetchDynamicTemplates(templateCategory);
-                        }
-                      }}
-                    >
-                      <Settings className="w-4 h-4" />
-                      <CardTitle className="text-base">工作流设置</CardTitle>
-                      {workflowInfo?.hasWorkflow && (
-                        <Badge variant="outline" className="ml-auto bg-green-50 text-green-600 border-green-200">
-                          已配置
-                        </Badge>
-                      )}
-                    </button>
-                  </CardHeader>
-                  {showWorkflowSettings && (
-                    <CardContent className="space-y-4">
-                      {/* 模板类别切换 */}
-                      <div>
-                        <div className="flex items-center justify-between mb-2">
-                          <label className="text-sm font-medium">选择模板类型</label>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => {
-                              fetchDynamicTemplates(templateCategory);
-                            }}
-                            disabled={templatesLoading}
-                          >
-                            <Sparkles className="w-4 h-4 mr-1" />
-                            {templatesLoading ? "加载中..." : "刷新模板"}
-                          </Button>
-                        </div>
-                        <div className="flex gap-2">
-                          <Button
-                            size="sm"
-                            variant={templateCategory === "all" ? "default" : "outline"}
-                            onClick={() => {
-                              setTemplateCategory("all");
-                              fetchDynamicTemplates("all");
-                            }}
-                          >
-                            全部
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant={templateCategory === "image" ? "default" : "outline"}
-                            onClick={() => {
-                              setTemplateCategory("image");
-                              fetchDynamicTemplates("image");
-                              setShowImageWorkflow(true);
-                              // 如果还没有加载工作流列表，获取一次
-                              if (availableWorkflows.length === 0) {
-                                fetchAvailableWorkflows();
-                              }
-                            }}
-                          >
-                            <Image className="w-4 h-4 mr-1" />
-                            图片生成
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant={templateCategory === "video" ? "default" : "outline"}
-                            onClick={() => {
-                              setTemplateCategory("video");
-                              fetchDynamicTemplates("video");
-                              setShowImageWorkflow(false);
-                            }}
-                          >
-                            <Film className="w-4 h-4 mr-1" />
-                            视频生成
-                          </Button>
-                        </div>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Settings className="w-4 h-4" />
+                        <CardTitle className="text-base">工作流设置</CardTitle>
                       </div>
-
-                      {/* 图片生成工作流设置 */}
-                      {showImageWorkflow && (
-                        <div className="border-t pt-4">
-                          <label className="text-sm font-medium mb-2 block">图片生成工作流</label>
-                          <div className="text-xs text-gray-500 mb-2">
-                            设置 ComfyUI 图片生成使用的工作流模板
-                          </div>
-
-                          {/* 工作流模板选择 */}
-                          {workflowParamsLoading ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          fetchImageWorkflows();
+                          fetchVideoWorkflows();
+                        }}
+                      >
+                        <Sparkles className="w-4 h-4 mr-1" />
+                        刷新
+                      </Button>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    {/* 图片生成工作流 */}
+                    <div className="border rounded-lg p-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                          <Image className="w-4 h-4" />
+                          <span className="font-medium text-sm">图片生成工作流</span>
+                          {imageWorkflow && (
+                            <Badge variant="outline" className="ml-2 bg-green-50 text-green-600 border-green-200 text-xs">
+                              已配置
+                            </Badge>
+                          )}
+                        </div>
+                        <button
+                          className="text-xs text-blue-500 hover:text-blue-700"
+                          onClick={() => setShowImageWorkflowSection(!showImageWorkflowSection)}
+                        >
+                          {showImageWorkflowSection ? "收起" : "展开"}
+                        </button>
+                      </div>
+                      {showImageWorkflowSection && (
+                        <div className="space-y-3">
+                          {imageWorkflowLoading ? (
                             <div className="flex items-center justify-center py-4">
                               <Loader2 className="w-5 h-5 animate-spin text-gray-400 mr-2" />
-                              <span className="text-sm text-gray-500">加载工作流中...</span>
-                            </div>
-                          ) : availableWorkflows.length === 0 ? (
-                            <div className="text-center py-4 text-sm text-gray-500">
-                              <p>暂无可用工作流</p>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={fetchAvailableWorkflows}
-                                className="mt-2"
-                              >
-                                刷新重试
-                              </Button>
+                              <span className="text-sm text-gray-500">加载中...</span>
                             </div>
                           ) : (
-                            <div className="mb-3">
+                            <>
                               <select
                                 value={imageWorkflowParams.workflowFile}
-                                onChange={(e) => handleWorkflowSelect(e.target.value)}
+                                onChange={(e) => handleImageWorkflowSelect(e.target.value)}
                                 disabled={generating !== null}
                                 className="w-full px-3 py-2 border rounded-lg text-sm bg-white"
                               >
-                                {availableWorkflows.map((wf) => (
+                                {availableImageWorkflows.map((wf) => (
                                   <option key={wf.id} value={wf.file}>
-                                    {wf.name} ({wf.description || wf.category})
+                                    {wf.name}
                                   </option>
                                 ))}
                               </select>
-                            </div>
-                          )}
-
-                          {/* 图像参数设置 */}
-                          <div className="bg-gray-50 rounded-lg p-3 mb-3">
-                            <div className="text-xs font-medium text-gray-600 mb-2">生成参数</div>
-                            <div className="grid grid-cols-3 gap-3">
-                              <div>
-                                <label className="text-xs text-gray-500 block mb-1">宽度</label>
-                                <select
-                                  value={imageWorkflowParams.width}
-                                  onChange={(e) => setImageWorkflowParams(prev => ({ ...prev, width: Number(e.target.value) }))}
-                                  disabled={generating !== null}
-                                  className="w-full px-2 py-1 border rounded text-sm"
-                                >
-                                  <option value={512}>512</option>
-                                  <option value={768}>768</option>
-                                  <option value={1024}>1024</option>
-                                  <option value={1536}>1536</option>
-                                </select>
-                              </div>
-                              <div>
-                                <label className="text-xs text-gray-500 block mb-1">高度</label>
-                                <select
-                                  value={imageWorkflowParams.height}
-                                  onChange={(e) => setImageWorkflowParams(prev => ({ ...prev, height: Number(e.target.value) }))}
-                                  disabled={generating !== null}
-                                  className="w-full px-2 py-1 border rounded text-sm"
-                                >
-                                  <option value={512}>512</option>
-                                  <option value={768}>768</option>
-                                  <option value={1024}>1024</option>
-                                  <option value={1536}>1536</option>
-                                </select>
-                              </div>
-                              <div>
-                                <label className="text-xs text-gray-500 block mb-1">步数</label>
-                                <select
-                                  value={imageWorkflowParams.steps}
-                                  onChange={(e) => setImageWorkflowParams(prev => ({ ...prev, steps: Number(e.target.value) }))}
-                                  disabled={generating !== null}
-                                  className="w-full px-2 py-1 border rounded text-sm"
-                                >
-                                  <option value={4}>4</option>
-                                  <option value={8}>8</option>
-                                  <option value={16}>16</option>
-                                  <option value={24}>24</option>
-                                  <option value={32}>32</option>
-                                </select>
-                              </div>
-                            </div>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="w-full mt-2"
-                              onClick={handleSaveWorkflowParams}
-                              disabled={generating !== null}
-                            >
-                              <Save className="w-3 h-3 mr-1" />
-                              保存参数
-                            </Button>
-                          </div>
-
-                          {/* 动态模板列表 */}
-                          {templatesLoading ? (
-                            <div className="flex items-center justify-center py-8">
-                              <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
-                              <span className="ml-2 text-sm text-gray-500">加载模板中...</span>
-                            </div>
-                          ) : (
-                            <div className="grid grid-cols-1 gap-2 max-h-60 overflow-y-auto">
-                              {dynamicTemplates.filter(t => t.category === "image" || t.category === undefined).map((template) => {
-                                const isSelected = workflowInfo?.templateName === template.id;
-                                const isDisabled = generating !== null;
-                                
-                                return (
-                                  <div
-                                    key={template.id}
-                                    className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer transition-all ${
-                                      isDisabled
-                                        ? "opacity-50 cursor-not-allowed"
-                                        : isSelected
-                                          ? "border-blue-500 bg-blue-50"
-                                          : "border-gray-200 hover:border-gray-300 hover:bg-gray-50"
-                                    }`}
-                                    onClick={() => !isDisabled && handleTemplateSelect(template.id)}
+                              <div className="grid grid-cols-3 gap-2">
+                                <div>
+                                  <label className="text-xs text-gray-500 block mb-1">宽度</label>
+                                  <select
+                                    value={imageWorkflowParams.width}
+                                    onChange={(e) => setImageWorkflowParams(prev => ({ ...prev, width: Number(e.target.value) }))}
+                                    className="w-full px-2 py-1 border rounded text-sm"
                                   >
-                                    <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
-                                      isSelected ? "bg-blue-500 text-white" : "bg-gray-100"
-                                    }`}>
-                                      <Image className="w-5 h-5" />
-                                    </div>
-                                    <div className="flex-1 min-w-0">
-                                      <p className="font-medium text-sm">{template.name}</p>
-                                      <p className="text-xs text-gray-500 truncate">{template.description}</p>
-                                    </div>
-                                    {isSelected && (
-                                      <CheckCircle className="w-5 h-5 text-blue-500 flex-shrink-0" />
-                                    )}
-                                  </div>
-                                );
-                              })}
-                              {/* 自定义上传选项 */}
-                              <div
-                                className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer transition-all ${
-                                  generating !== null
-                                    ? "opacity-50 cursor-not-allowed"
-                                    : workflowInfo?.templateName === "custom_image"
-                                      ? "border-blue-500 bg-blue-50"
-                                      : "border-gray-200 hover:border-gray-300 hover:bg-gray-50"
-                                }`}
-                                onClick={() => {
-                                  if (generating === null) {
-                                    setWorkflowInfo((prev) => prev ? {
-                                      ...prev,
-                                      templateName: "custom_image",
-                                    } : {
-                                      hasWorkflow: false,
-                                      nodeCount: 0,
-                                      classTypes: [],
-                                      templateName: "custom_image",
-                                    });
-                                  }
-                                }}
-                              >
-                                <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
-                                  workflowInfo?.templateName === "custom_image" ? "bg-blue-500 text-white" : "bg-gray-100"
-                                }`}>
-                                  <Upload className="w-5 h-5" />
+                                    <option value={512}>512</option>
+                                    <option value={768}>768</option>
+                                    <option value={1024}>1024</option>
+                                  </select>
                                 </div>
-                                <div className="flex-1 min-w-0">
-                                  <p className="font-medium text-sm">自定义上传</p>
-                                  <p className="text-xs text-gray-500">从本地 JSON 文件导入</p>
-                                </div>
-                              </div>
-                            </div>
-                          )}
-                          {workflowInfo?.templateName === "custom_image" && (
-                            <div className="mt-2">
-                              <label className="cursor-pointer">
-                                <input
-                                  type="file"
-                                  accept=".json"
-                                  onChange={handleWorkflowUpload}
-                                  disabled={uploadingWorkflow || generating !== null}
-                                  className="hidden"
-                                />
-                                <div
-                                  className={`flex items-center justify-center gap-2 w-full px-4 py-3 border-2 border-dashed rounded-lg transition-colors ${
-                                    uploadingWorkflow || generating !== null
-                                      ? "bg-gray-100 text-gray-400 cursor-not-allowed border-gray-300"
-                                      : "bg-white border-gray-300 hover:border-blue-400 hover:bg-blue-50"
-                                  }`}
-                                >
-                                  {uploadingWorkflow ? (
-                                    <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                                  ) : (
-                                    <Upload className="w-5 h-5 mr-2 text-gray-400" />
-                                  )}
-                                  <span className={uploadingWorkflow || generating !== null ? "text-gray-400" : "text-gray-600"}>
-                                    {uploadingWorkflow ? "上传中..." : "点击选择图片生成工作流 JSON"}
-                                  </span>
-                                </div>
-                              </label>
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      {/* 视频生成工作流设置 */}
-                      {!showImageWorkflow && (
-                        <div className="border-t pt-4">
-                          <label className="text-sm font-medium mb-2 block">视频生成工作流</label>
-                          <div className="text-xs text-gray-500 mb-2">
-                            设置 ComfyUI 视频生成使用的工作流模板
-                          </div>
-                          {/* 动态模板列表 */}
-                          {templatesLoading ? (
-                            <div className="flex items-center justify-center py-8">
-                              <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
-                              <span className="ml-2 text-sm text-gray-500">加载模板中...</span>
-                            </div>
-                          ) : (
-                            <div className="grid grid-cols-1 gap-2 max-h-60 overflow-y-auto">
-                              {dynamicTemplates.filter(t => t.category === "video" || t.category === undefined).map((template) => {
-                                const isSelected = workflowInfo?.templateName === template.id;
-                                const isDisabled = generating !== null;
-                                
-                                return (
-                                  <div
-                                    key={template.id}
-                                    className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer transition-all ${
-                                      isDisabled
-                                        ? "opacity-50 cursor-not-allowed"
-                                        : isSelected
-                                          ? "border-blue-500 bg-blue-50"
-                                          : "border-gray-200 hover:border-gray-300 hover:bg-gray-50"
-                                    }`}
-                                    onClick={() => !isDisabled && handleTemplateSelect(template.id)}
+                                <div>
+                                  <label className="text-xs text-gray-500 block mb-1">高度</label>
+                                  <select
+                                    value={imageWorkflowParams.height}
+                                    onChange={(e) => setImageWorkflowParams(prev => ({ ...prev, height: Number(e.target.value) }))}
+                                    className="w-full px-2 py-1 border rounded text-sm"
                                   >
-                                    <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
-                                      isSelected ? "bg-blue-500 text-white" : "bg-gray-100"
-                                    }`}>
-                                      <Film className="w-5 h-5" />
-                                    </div>
-                                    <div className="flex-1 min-w-0">
-                                      <p className="font-medium text-sm">{template.name}</p>
-                                      <p className="text-xs text-gray-500 truncate">{template.description}</p>
-                                    </div>
-                                    {isSelected && (
-                                      <CheckCircle className="w-5 h-5 text-blue-500 flex-shrink-0" />
-                                    )}
-                                  </div>
-                                );
-                              })}
-                              {/* 自定义上传选项 */}
-                              <div
-                                className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer transition-all ${
-                                  generating !== null
-                                    ? "opacity-50 cursor-not-allowed"
-                                    : workflowInfo?.templateName === "custom"
-                                      ? "border-blue-500 bg-blue-50"
-                                      : "border-gray-200 hover:border-gray-300 hover:bg-gray-50"
-                                }`}
-                                onClick={() => {
-                                  if (generating === null) {
-                                    setWorkflowInfo((prev) => prev ? {
-                                      ...prev,
-                                      templateName: "custom",
-                                    } : {
-                                      hasWorkflow: false,
-                                      nodeCount: 0,
-                                      classTypes: [],
-                                      templateName: "custom",
-                                    });
-                                  }
-                                }}
-                              >
-                                <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
-                                  workflowInfo?.templateName === "custom" ? "bg-blue-500 text-white" : "bg-gray-100"
-                                }`}>
-                                  <Upload className="w-5 h-5" />
+                                    <option value={512}>512</option>
+                                    <option value={768}>768</option>
+                                    <option value={1024}>1024</option>
+                                  </select>
                                 </div>
-                                <div className="flex-1 min-w-0">
-                                  <p className="font-medium text-sm">自定义上传</p>
-                                  <p className="text-xs text-gray-500">从本地 JSON 文件导入</p>
+                                <div>
+                                  <label className="text-xs text-gray-500 block mb-1">步数</label>
+                                  <select
+                                    value={imageWorkflowParams.steps}
+                                    onChange={(e) => setImageWorkflowParams(prev => ({ ...prev, steps: Number(e.target.value) }))}
+                                    className="w-full px-2 py-1 border rounded text-sm"
+                                  >
+                                    <option value={8}>8</option>
+                                    <option value={16}>16</option>
+                                    <option value={20}>20</option>
+                                    <option value={30}>30</option>
+                                  </select>
                                 </div>
                               </div>
-                            </div>
-                          )}
-                          {workflowInfo?.templateName === "custom" && (
-                            <div className="mt-2">
-                              <label className="cursor-pointer">
-                                <input
-                                  type="file"
-                                  accept=".json"
-                                  onChange={handleWorkflowUpload}
-                                  disabled={uploadingWorkflow || generating !== null}
-                                  className="hidden"
-                                />
-                                <div
-                                  className={`flex items-center justify-center gap-2 w-full px-4 py-3 border-2 border-dashed rounded-lg transition-colors ${
-                                    uploadingWorkflow || generating !== null
-                                      ? "bg-gray-100 text-gray-400 cursor-not-allowed border-gray-300"
-                                      : "bg-white border-gray-300 hover:border-blue-400 hover:bg-blue-50"
-                                  }`}
-                                >
-                                  {uploadingWorkflow ? (
-                                    <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                                  ) : (
-                                    <Upload className="w-5 h-5 mr-2 text-gray-400" />
-                                  )}
-                                  <span className={uploadingWorkflow || generating !== null ? "text-gray-400" : "text-gray-600"}>
-                                    {uploadingWorkflow ? "上传中..." : "点击选择视频生成工作流 JSON"}
-                                  </span>
-                                </div>
-                              </label>
-                            </div>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="w-full"
+                                onClick={handleSaveImageWorkflowParams}
+                                disabled={generating !== null}
+                              >
+                                <Save className="w-3 h-3 mr-1" />
+                                保存参数
+                              </Button>
+                            </>
                           )}
                         </div>
                       )}
+                    </div>
 
-                      {/* 当前配置状态 */}
-                      {workflowInfo?.hasWorkflow && workflowInfo?.templateName !== "custom" && workflowInfo?.templateName !== "custom_image" && (
-                        <div className="bg-green-50 border border-green-200 rounded-lg p-3">
-                          <div className="flex items-center gap-2 mb-2">
-                            <CheckCircle className="w-4 h-4 text-green-500" />
-                            <span className="font-medium text-sm text-green-700">
-                              {dynamicTemplates.find(t => t.id === workflowInfo?.templateName)?.name || 
-                               WORKFLOW_TEMPLATES.find(t => t.id === workflowInfo?.templateName)?.name || 
-                               "已选择"} 工作流
-                            </span>
-                          </div>
-                          {workflowInfo.classTypes.length > 0 && (
-                            <div className="flex flex-wrap gap-1">
-                              {workflowInfo.classTypes.slice(0, 5).map((type, i) => (
-                                <Badge key={i} variant="secondary" className="text-xs">
-                                  {type}
-                                </Badge>
-                              ))}
-                              {workflowInfo.classTypes.length > 5 && (
-                                <Badge variant="secondary" className="text-xs">
-                                  +{workflowInfo.classTypes.length - 5}
-                                </Badge>
-                              )}
-                            </div>
+                    {/* 视频生成工作流 */}
+                    <div className="border rounded-lg p-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                          <Film className="w-4 h-4" />
+                          <span className="font-medium text-sm">视频生成工作流</span>
+                          {videoWorkflow && (
+                            <Badge variant="outline" className="ml-2 bg-green-50 text-green-600 border-green-200 text-xs">
+                              已配置
+                            </Badge>
                           )}
                         </div>
-                      )}
-
-                      {/* 占位符说明 */}
-                      <div className="bg-gray-50 rounded-lg p-3">
-                        <p className="text-xs font-medium text-gray-600 mb-1">支持的占位符：</p>
-                        <code className="text-xs text-gray-500">
-                          {"{{prompt}}"} {"{{negative_prompt}}"} {"{{first_frame}}"} {"{{last_frame}}"} {"{{width}}"} {"{{height}}"} {"{{duration}}"} {"{{frame_length}}"}
-                        </code>
+                        <button
+                          className="text-xs text-blue-500 hover:text-blue-700"
+                          onClick={() => setShowVideoWorkflowSection(!showVideoWorkflowSection)}
+                        >
+                          {showVideoWorkflowSection ? "收起" : "展开"}
+                        </button>
                       </div>
-                    </CardContent>
-                  )}
+                      {showVideoWorkflowSection && (
+                        <div className="space-y-3">
+                          {videoWorkflowLoading ? (
+                            <div className="flex items-center justify-center py-4">
+                              <Loader2 className="w-5 h-5 animate-spin text-gray-400 mr-2" />
+                              <span className="text-sm text-gray-500">加载中...</span>
+                            </div>
+                          ) : (
+                            <>
+                              <select
+                                value={videoWorkflow?.templateName || ""}
+                                onChange={(e) => handleVideoWorkflowSelect(e.target.value)}
+                                disabled={generating !== null}
+                                className="w-full px-3 py-2 border rounded-lg text-sm bg-white"
+                              >
+                                <option value="">使用默认配置</option>
+                                {availableVideoWorkflows.map((wf) => (
+                                  <option key={wf.id} value={wf.file}>
+                                    {wf.name}
+                                  </option>
+                                ))}
+                              </select>
+                              {videoWorkflow && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="w-full text-red-500"
+                                  onClick={handleClearVideoWorkflow}
+                                >
+                                  清除配置
+                                </Button>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </CardContent>
                 </Card>
               </CardContent>
             </Card>

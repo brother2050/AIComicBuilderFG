@@ -7,7 +7,9 @@ export {
   ComfyUIVideoProvider,
   getComfyUIImageProvider, 
   getComfyUIVideoProvider,
-  fetchComfyUIImageByPromptId 
+  recoverImageByPromptId as fetchComfyUIImageByPromptId,
+  type ImageSubmitResult,
+  type ImageStatusResult,
 } from "./providers/comfyui";
 
 /**

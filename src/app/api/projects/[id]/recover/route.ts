@@ -5,7 +5,7 @@
 import { NextResponse } from "next/server";
 import { db, characters, shots } from "@/lib/db";
 import { eq } from "drizzle-orm";
-import { fetchComfyUIImageByPromptId } from "@/lib/ai/providers/comfyui";
+import { recoverImageByPromptId as fetchComfyUIImageByPromptId } from "@/lib/ai/providers/comfyui";
 
 export async function POST(
   _request: Request,
