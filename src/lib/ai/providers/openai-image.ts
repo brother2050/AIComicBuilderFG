@@ -6,7 +6,7 @@ import { ulid } from "ulid";
 
 /**
  * OpenAI 图片生成 Provider
- * 使用 DALL-E API 生成图片
+ * 使用 DALL-E API 生成图片，支持文生图和图生图
  */
 export class OpenAIImageProvider {
   private client: OpenAI;
@@ -37,8 +37,9 @@ export class OpenAIImageProvider {
 
   /**
    * 生成图片 - 使用 DALL-E 或兼容 API
+   * 支持图生图：当提供 referenceImage 时，使用图片编辑模式（DALL-E 2 或兼容 API）
    * @param prompt 提示词
-   * @param options 图片选项
+   * @param options 图片选项，包含 referenceImage 用于图生图
    * @param _onPromptIdSubmit OpenAI 模式下不支持，回调会被忽略
    */
   async generateImage(
@@ -46,7 +47,8 @@ export class OpenAIImageProvider {
     options?: ImageOptions, 
     _onPromptIdSubmit?: (promptId: string) => void | Promise<void>
   ): Promise<string> {
-    console.log(`[OpenAI Image] Generating image with model: ${this.defaultModel}`);
+    const model = options?.model || this.defaultModel;
+    console.log(`[OpenAI Image] Generating image with model: ${model}`);
 
     // 解析尺寸
     let size: "1024x1024" | "1792x1024" | "1024x1792" | "512x512" | "256x256" = "1024x1024";
@@ -65,9 +67,46 @@ export class OpenAIImageProvider {
     const truncatedPrompt = prompt.length > 4000 ? prompt.substring(0, 3997) + "..." : prompt;
 
     try {
-      // 首先尝试使用 url 格式（兼容性更好）
+      // 检查是否使用图生图模式（提供 referenceImage）
+      if (options?.referenceImage) {
+        console.log(`[OpenAI Image] Using image edit mode with reference: ${options.referenceImage}`);
+        
+        // 读取参考图并转为 base64
+        const refImageData = await this.readImageAsBase64(options.referenceImage);
+        
+        // DALL-E 3 不支持编辑，降级到 DALL-E 2
+        const editModel = model.includes("dall-e-3") ? "dall-e-2" : model;
+        
+        // 直接使用 fetch 调用图片编辑 API
+        const apiUrl = (this.client as unknown as { baseURL: string }).baseURL || "https://api.openai.com/v1";
+        const apiKey = (this.client as unknown as { apiKey: string }).apiKey;
+        
+        const response = await fetch(`${apiUrl}/images/generations`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model: editModel,
+            prompt: truncatedPrompt,
+            image: refImageData,
+            n: 1,
+            size,
+            response_format: "url",
+          }),
+        });
+        
+        if (!response.ok) {
+          throw new Error(`图片编辑 API 失败: ${response.status} ${await response.text()}`);
+        }
+        
+        return this.downloadAndSaveImage(await response.json() as OpenAI.ImagesResponse);
+      }
+
+      // 文生图模式
       const response = await this.client.images.generate({
-        model: options?.model || this.defaultModel,
+        model,
         prompt: truncatedPrompt,
         n: 1,
         size,
@@ -75,34 +114,53 @@ export class OpenAIImageProvider {
         response_format: "url",
       });
 
-      const imageData = response.data?.[0];
-      if (!imageData?.url) {
-        throw new Error("API 未返回图片 URL");
-      }
-
-      // 下载图片
-      console.log(`[OpenAI Image] Downloading from: ${imageData.url}`);
-      const imageResponse = await fetch(imageData.url);
-      if (!imageResponse.ok) {
-        throw new Error(`下载图片失败: ${imageResponse.status}`);
-      }
-
-      // 保存到本地
-      const filename = `${ulid()}.png`;
-      const dir = path.join(this.uploadDir, "frames");
-      fs.mkdirSync(dir, { recursive: true });
-      const filepath = path.join(dir, filename);
-
-      const buffer = Buffer.from(await imageResponse.arrayBuffer());
-      fs.writeFileSync(filepath, buffer);
-
-      console.log(`[OpenAI Image] Saved to: ${filepath}`);
-      return filepath;
+      return this.downloadAndSaveImage(response);
     } catch (error) {
       throw new Error(
         `OpenAI 图片生成失败: ${error instanceof Error ? error.message : "未知错误"}`
       );
     }
+  }
+
+  /**
+   * 读取图片并转为 base64
+   */
+  private async readImageAsBase64(imagePath: string): Promise<string> {
+    if (imagePath.startsWith("http://") || imagePath.startsWith("https://")) {
+      const res = await fetch(imagePath);
+      if (!res.ok) throw new Error(`Failed to fetch: ${imagePath}`);
+      return Buffer.from(await res.arrayBuffer()).toString("base64");
+    }
+    return fs.readFileSync(imagePath).toString("base64");
+  }
+
+  /**
+   * 下载并保存图片
+   */
+  private async downloadAndSaveImage(
+    response: OpenAI.ImagesResponse
+  ): Promise<string> {
+    const imageData = response.data?.[0];
+    if (!imageData?.url) {
+      throw new Error("API 未返回图片 URL");
+    }
+
+    console.log(`[OpenAI Image] Downloading from: ${imageData.url}`);
+    const imageResponse = await fetch(imageData.url);
+    if (!imageResponse.ok) {
+      throw new Error(`下载图片失败: ${imageResponse.status}`);
+    }
+
+    const filename = `${ulid()}.png`;
+    const dir = path.join(this.uploadDir, "frames");
+    fs.mkdirSync(dir, { recursive: true });
+    const filepath = path.join(dir, filename);
+
+    const buffer = Buffer.from(await imageResponse.arrayBuffer());
+    fs.writeFileSync(filepath, buffer);
+
+    console.log(`[OpenAI Image] Saved to: ${filepath}`);
+    return filepath;
   }
 }
 

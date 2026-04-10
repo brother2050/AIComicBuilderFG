@@ -162,7 +162,11 @@ export async function generateFrames(
           await db.update(shots).set({ lastFramePromptId: result.promptId }).where(eq(shots.id, shot.id));
           lastFramePath = await comfyProvider.pollImageUntilComplete(result.promptId, { projectId, checkCancelled });
         } else {
-          lastFramePath = await imageProvider.generateImage(lastFramePrompt, defaultImageParams);
+          // 非 ComfyUI 模式：使用图生图（DALL-E 等支持 referenceImage 的 API）
+          lastFramePath = await imageProvider.generateImage(lastFramePrompt, {
+            ...defaultImageParams,
+            referenceImage: firstFramePath,
+          });
         }
 
         await db.update(shots)
