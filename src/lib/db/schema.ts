@@ -19,6 +19,8 @@ export const projects = sqliteTable("projects", {
   finalVideoUrl: text("final_video_url"),
   // 项目级图片生成工作流配置（存储 JSON）
   imageWorkflow: text("image_workflow"),
+  // 项目级角色图提示词模板（占位符: {CHARACTER_NAME}, {STYLE}, {DESCRIPTION}）
+  imagePrompt: text("image_prompt"),
   // 项目级视频生成工作流配置（存储 JSON）
   videoWorkflow: text("video_workflow"),
   createdAt: integer("created_at", { mode: "timestamp" })

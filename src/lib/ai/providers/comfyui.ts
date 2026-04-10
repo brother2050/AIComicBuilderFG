@@ -176,6 +176,7 @@ export class ComfyUIImageProvider implements AIProvider {
       model: options?.model,
       vae: options?.vae,
       clip: options?.clip,
+      forcePrompt: options?.forcePrompt,
     };
 
     const apiWorkflow = applyWorkflowParams(workflow, params);
@@ -248,6 +249,7 @@ export class ComfyUIImageProvider implements AIProvider {
       model: options?.model,
       vae: options?.vae,
       clip: options?.clip,
+      forcePrompt: options?.forcePrompt,
     };
 
     const apiWorkflow = applyWorkflowParams(workflow, params);

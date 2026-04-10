@@ -27,7 +27,8 @@ export interface WorkflowParams {
   lora?: string;
   lora_strength_model?: number;
   lora_strength_clip?: number;
-  [key: string]: string | number | undefined;
+  forcePrompt?: boolean; // 强制使用 prompt 覆盖工作流默认文本
+  [key: string]: string | number | boolean | undefined;
 }
 
 export interface WorkflowTemplate {
@@ -231,7 +232,9 @@ function applyNodeParams(inputs: Record<string, unknown>, classType: string, par
   }
 
   // 默认文本填充
-  if (inputs['text'] === undefined && params.prompt !== undefined) {
+  // forcePrompt 为 true 时，无论工作流中是否有默认文本，都强制使用 params.prompt
+  const forcePrompt = params.forcePrompt === true;
+  if ((inputs['text'] === undefined || forcePrompt) && params.prompt !== undefined) {
     inputs['text'] = params.prompt;
   }
 }

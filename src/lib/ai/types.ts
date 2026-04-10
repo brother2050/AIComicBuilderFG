@@ -40,6 +40,7 @@ export interface ImageOptions {
   // 图生图支持
   inputImage?: string; // 输入图片路径，用于图生图工作流
   useImageEditApi?: boolean; // 是否使用图生图专用 API（使用 COMFYUI_IMAGE_EDIT_API_URL）
+  forcePrompt?: boolean; // 是否强制使用传入的 prompt 覆盖工作流中的默认文本
   // 进度回调 (ComfyUI)
   onProgress?: (progress: number) => void; // 进度百分比 0-100
   onNodeExecuting?: (nodeId: string | null) => void; // 当前执行节点
