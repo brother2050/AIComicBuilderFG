@@ -109,7 +109,7 @@ export async function executeTask(
 
       case "character_image": {
         await updateTaskStatus(taskId, "running", 30, "正在生成角色参考图...");
-        await generateCharacterImages(projectId, shotId, { force, taskId });
+        await generateCharacterImages(projectId, undefined, { force, taskId });
         await updateTaskStatus(taskId, "completed", 100, "角色图生成完成");
         break;
       }

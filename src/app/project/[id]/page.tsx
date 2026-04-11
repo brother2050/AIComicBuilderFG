@@ -41,7 +41,6 @@ import {
 } from "lucide-react";
 import { getFileUrl } from "@/lib/utils";
 import { TaskManager } from "@/components/TaskManager";
-import { DEFAULT_CHARACTER_DESCRIPTION_TEMPLATE } from "@/lib/prompts/templates/character-description";
 
 // 默认角色描述模板内容
 const DEFAULT_CHARACTER_TEMPLATE = `You are a professional character designer and visual artist specializing in AI image generation.
@@ -2183,6 +2182,7 @@ export default function ProjectPage() {
           projectId,
           action,
           episode: activeEpisode,
+          force,
         }),
       });
 

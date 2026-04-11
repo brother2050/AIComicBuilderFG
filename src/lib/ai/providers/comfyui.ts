@@ -10,14 +10,6 @@ import { getProjectFramesDir, getProjectVideosDir } from "@/lib/fs";
 
 // ============ 类型定义 ============
 
-export interface ComfyUIConfig {
-  apiUrl?: string;
-  defaultWorkflow?: string;
-  videoWorkflow?: string;
-  videoApiUrl?: string;
-  uploadDir?: string;
-}
-
 type TaskStatus = "pending" | "processing" | "completed" | "failed";
 
 interface TaskResult {

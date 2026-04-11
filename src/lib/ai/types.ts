@@ -1,11 +1,3 @@
-// AI供应商配置
-export interface ProviderConfig {
-  protocol: "openai" | "comfyui";
-  apiKey?: string;
-  baseUrl?: string;
-  model?: string;
-}
-
 // 文本生成选项
 export interface TextOptions {
   systemPrompt?: string;
